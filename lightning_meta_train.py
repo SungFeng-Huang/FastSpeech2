@@ -1,6 +1,7 @@
 import argparse
 import os
 
+import comet_ml
 import pytorch_lightning as pl
 import torch
 import yaml
@@ -66,9 +67,29 @@ def main(args, configs):
     # Init logger
     for p in train_config["path"].values():
         os.makedirs(p, exist_ok=True)
-    train_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_train")
-    val_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_val")
-    loggers = [train_logger, val_logger]
+    # train_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_train")
+    # val_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_val")
+    comet_kwargs = {
+        "experiment_key": None,
+        "log_code": True,
+        "log_graph": True,
+        "parse_args": True,
+        "log_env_details": True,
+        "log_git_metadata": True,
+        "log_git_patch": True,
+        "log_env_gpu": True,
+        "log_env_cpu": True,
+        "log_env_host": True,
+    }
+    train_logger = pl.loggers.CometLogger(
+        save_dir=os.path.join(train_config["path"]["log_path"], "meta"),
+        **comet_kwargs,
+    )
+    # val_logger = pl.loggers.CometLogger(
+        # save_dir=os.path.join(train_config["path"]["log_path"], "meta_val"),
+        # **comet_kwargs,
+    # )
+    loggers = [train_logger]
     profiler = AdvancedProfiler(train_config["path"]["log_path"], 'profile.log')
 
     # Training

@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import learn2learn as l2l
 from tqdm import tqdm
+from pytorch_lightning.loggers.base import merge_dicts
 from torch.utils.data import DataLoader
 
 from learn2learn.algorithms.lightning import LightningMAML
@@ -88,16 +89,19 @@ class ANILSystem(System):
             # tqdm.write(message + self.loss2str(train_loss))
             self.print(message + self.loss2str(train_loss))
 
-            self.logger[0].log_metrics(self.loss2dict(train_loss), self.trainer.global_step+1)
+            # self.logger[0].log_metrics(self.loss2dict(train_loss), self.trainer.global_step+1)
+        comet_log_dict = {f"train_{k}":v for k,v in self.loss2dict(train_loss).items()}
+        self.log_dict(
+            comet_log_dict,
+            sync_dist=True,
+        )
 
         total_loss = train_loss[0]
+        # For ModelCheckpoint monitor
         self.log(
             "train_loss",
             total_loss.item(),
-            on_step=False,
-            on_epoch=False,
-            prog_bar=False,
-            logger=True,
+            logger=False,
             sync_dist=True,
         )
         return total_loss
@@ -112,14 +116,18 @@ class ANILSystem(System):
         )
         tblog_dict = self.loss2dict(val_loss)
 
+        comet_log_dict = {f"val_{k}":v for k,v in self.loss2dict(val_loss).items()}
+        self.log_dict(
+            comet_log_dict,
+            sync_dist=True,
+        )
+
         total_loss = val_loss[0]
+        # For ModelCheckpoint monitor
         self.log(
             "val_loss",
             total_loss.item(),
-            on_step=False,
-            on_epoch=True,
-            prog_bar=False,
-            logger=True,
+            logger=False,
             sync_dist=True,
         )
         return tblog_dict
@@ -142,6 +150,17 @@ class ANILSystem(System):
         # )
         # return test_loss.item()
         # return tblog_dict
+
+    def validation_epoch_end(self, val_outputs=None):
+        """Log hp_metric to tensorboard for hparams selection."""
+        if self.trainer.global_step > 0:
+            tblog_dict = merge_dicts(val_outputs)
+            loss = self.dict2loss(tblog_dict)
+
+            message = f"Validation Step {self.trainer.global_step+1}, "
+            tqdm.write(message + self.loss2str(loss))
+
+            # self.logger[1].log_metrics(tblog_dict, self.trainer.global_step+1)
 
     @torch.enable_grad()
     def meta_learn(self, batch, batch_idx, ways, shots, queries):
