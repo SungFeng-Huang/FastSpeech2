@@ -305,8 +305,9 @@ class System(pl.LightningModule):
             )
         return self.val_loader
 
-    # def on_save_checkpoint(self, checkpoint):
-        # """Overwrite if you want to save more things in the checkpoint."""
-        # checkpoint["training_config"] = self.config
-        # return checkpoint
-
+    def on_save_checkpoint(self, checkpoint):
+        """Overwrite if you want to save more things in the checkpoint."""
+        checkpoint["preprocess_config"] = self.preprocess_config
+        checkpoint["train_config"] = self.train_config
+        checkpoint["model_config"] = self.model_config
+        return checkpoint

@@ -37,6 +37,7 @@ def main(args, configs):
     train_dataset = Dataset(
         "train.txt", preprocess_config, train_config, sort=True, drop_last=True
     )
+    #TODO: re-preprocess val.txt
     val_dataset = Dataset(
         "val.txt", preprocess_config, train_config, sort=False, drop_last=False
     )
@@ -81,15 +82,16 @@ def main(args, configs):
         "log_env_cpu": True,
         "log_env_host": True,
     }
-    train_logger = pl.loggers.CometLogger(
+    comet_logger = pl.loggers.CometLogger(
         save_dir=os.path.join(train_config["path"]["log_path"], "meta"),
         **comet_kwargs,
     )
-    # val_logger = pl.loggers.CometLogger(
-        # save_dir=os.path.join(train_config["path"]["log_path"], "meta_val"),
-        # **comet_kwargs,
-    # )
-    loggers = [train_logger]
+    comet_logger.log_hyperparams({
+        "preprocess_config": preprocess_config,
+        "train_config": train_config,
+        "model_config": model_config,
+    })
+    loggers = [comet_logger]
     profiler = AdvancedProfiler(train_config["path"]["log_path"], 'profile.log')
 
     # Training
@@ -118,7 +120,7 @@ def main(args, configs):
     # outer_bar = tqdm(total=total_step, desc="Training", position=0)
     # outer_bar.n = args.restore_step
     # outer_bar.update()
-    outer_bar = GlobalProgressBar()
+    outer_bar = GlobalProgressBar(process_position=0)
     inner_bar = ProgressBar(process_position=1)
     lr_monitor = LearningRateMonitor()
     gpu_monitor = GPUStatsMonitor(memory_utilization=True, gpu_utilization=True, intra_step_time=True, inter_step_time=True)
@@ -137,6 +139,7 @@ def main(args, configs):
         callbacks=callbacks,
         logger=loggers,
         gpus=gpus,
+        auto_select_gpus=True,
         distributed_backend=distributed_backend,
         limit_train_batches=1.0,  # Useful for fast experiment
         # fast_dev_run=True, # Useful for debugging
@@ -268,6 +271,10 @@ if __name__ == "__main__":
         "-t", "--train_config", type=str, help="path to train.yaml",
         default='config/LibriTTS/train.yaml',
     )
+    parser.add_argument(
+        "-s", "--meta_batch_size", type=int, help="meta batch size",
+        default=torch.cuda.device_count(),
+    )
     args = parser.parse_args()
 
     # Read Config
@@ -276,6 +283,8 @@ if __name__ == "__main__":
     )
     model_config = yaml.load(open(args.model_config, "r"), Loader=yaml.FullLoader)
     train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
+    train_config["meta"]["meta_batch_size"] = args.meta_batch_size
+    print(args.meta_batch_size)
     configs = (preprocess_config, model_config, train_config)
 
     main(args, configs)

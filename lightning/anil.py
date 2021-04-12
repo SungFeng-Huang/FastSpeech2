@@ -158,7 +158,7 @@ class ANILSystem(System):
             loss = self.dict2loss(tblog_dict)
 
             message = f"Validation Step {self.trainer.global_step+1}, "
-            tqdm.write(message + self.loss2str(loss))
+            self.print(message + self.loss2str(loss))
 
             # self.logger[1].log_metrics(tblog_dict, self.trainer.global_step+1)
 
@@ -323,7 +323,7 @@ class ANILSystem(System):
         )
         self.val_loader = DataLoader(
             episodic_tasks.val_dataloader(),
-            batch_size=meta_batch_size,
+            batch_size=1,
             shuffle=False,
             collate_fn=lambda batch: batch,
             num_workers=8,
