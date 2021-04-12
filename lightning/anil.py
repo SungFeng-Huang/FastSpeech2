@@ -288,7 +288,7 @@ class ANILSystem(System):
         )
         self.train_loader = DataLoader(
             episodic_tasks.train_dataloader(),
-            batch_size=meta_batch_size,
+            batch_size=1,   #batch_size on each gpu
             shuffle=True,
             collate_fn=lambda batch: batch,
             num_workers=8,

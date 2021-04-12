@@ -142,11 +142,11 @@ def main(args, configs):
         # fast_dev_run=True, # Useful for debugging
         # overfit_batches=0.001, # Useful for debugging
         gradient_clip_val=grad_clip_thresh,
-        accumulate_grad_batches=grad_acc_step*meta_batch_size,
+        accumulate_grad_batches=grad_acc_step,
         resume_from_checkpoint=resume_ckpt,
         deterministic=True,
         log_every_n_steps=log_step,
-        val_check_interval=val_step,
+        # val_check_interval=val_step,
         profiler=profiler,
     )
     trainer.fit(system)
