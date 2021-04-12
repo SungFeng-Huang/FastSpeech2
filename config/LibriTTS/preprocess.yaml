@@ -1,9 +1,9 @@
 dataset: "LibriTTS"
 
 path:
-  corpus_path: "/home/ming/Data/LibriTTS/train-clean-360"
+  corpus_path: "/home/r06942045/myData/LibriTTS/train-clean-100"
   lexicon_path: "lexicon/librispeech-lexicon.txt"
-  raw_path: "./raw_data/LibriTTS"
+  raw_path: "./raw_data/LibriTTS/train-clean-100"
   preprocessed_path: "./preprocessed_data/LibriTTS"
 
 preprocessing:
@@ -21,7 +21,7 @@ preprocessing:
   mel:
     n_mel_channels: 80
     mel_fmin: 0
-    mel_fmax: 8000 # please set to 8000 for HiFi-GAN vocoder, set to null for MelGAN vocoder
+    mel_fmax: Null # please set to 8000 for HiFi-GAN vocoder, set to null for MelGAN vocoder
   pitch:
     feature: "phoneme_level" # support 'phoneme_level' or 'frame_level'
     normalization: True

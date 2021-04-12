@@ -18,3 +18,11 @@ step:
   synth_step: 1000
   val_step: 1000
   save_step: 100000
+meta:
+  ways: 1
+  shots: 5
+  queries: 5
+  meta_batch_size: 1
+  adaptation_steps: 5
+  adaptation_lr: 0.001
+  data_parallel: False
