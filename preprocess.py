@@ -12,4 +12,7 @@ if __name__ == "__main__":
 
     config = yaml.load(open(args.config, "r"), Loader=yaml.FullLoader)
     preprocessor = Preprocessor(config)
-    preprocessor.build_from_path()
+    if "meta" in config:
+        preprocessor.build_from_meta_path()
+    else:
+        preprocessor.build_from_path()

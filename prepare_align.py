@@ -20,4 +20,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = yaml.load(open(args.config, "r"), Loader=yaml.FullLoader)
-    main(config)
+    if "meta" in config:
+        corpus_path = config["path"]["corpus_path"]
+        raw_path = config["path"]["raw_path"]
+        import os
+        for dset in [config["meta"]["train"], config["meta"]["val"], config["meta"]["test"]]:
+            config["path"]["corpus_path"] = os.path.join(corpus_path, dset)
+            config["path"]["raw_path"] = os.path.join(raw_path, dset)
+            main(config)

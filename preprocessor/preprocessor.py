@@ -50,6 +50,116 @@ class Preprocessor:
             config["preprocessing"]["mel"]["mel_fmax"],
         )
 
+        if "meta" in config:
+            self.train_set = config["meta"]["train"]
+            self.val_set = config["meta"]["val"]
+            self.test_set = config["meta"]["test"]
+
+    def build_from_meta_path(self):
+        os.makedirs((os.path.join(self.out_dir, "mel")), exist_ok=True)
+        os.makedirs((os.path.join(self.out_dir, "pitch")), exist_ok=True)
+        os.makedirs((os.path.join(self.out_dir, "energy")), exist_ok=True)
+        os.makedirs((os.path.join(self.out_dir, "duration")), exist_ok=True)
+
+        print("Processing Data ...")
+        n_frames = 0
+        pitch_scaler = StandardScaler()
+        energy_scaler = StandardScaler()
+
+        # Compute pitch, energy, duration, and mel-spectrogram
+        speakers = {}
+        i = 0
+        in_dir = self.in_dir
+        outs = {}
+        for dset in [self.train_set, self.val_set, self.test_set]:
+            self.in_dir = os.path.join(in_dir, dset)
+            out = list()
+            for speaker in tqdm(os.listdir(self.in_dir)):
+                speakers[speaker] = i
+                for wav_name in os.listdir(os.path.join(self.in_dir, speaker)):
+                    if ".wav" not in wav_name:
+                        continue
+
+                    basename = wav_name.split(".")[0]
+                    tg_path = os.path.join(
+                        self.out_dir, "TextGrid", speaker, "{}.TextGrid".format(basename)
+                    )
+                    if os.path.exists(tg_path):
+                        ret = self.process_utterance(speaker, basename)
+                        if ret is None:
+                            continue
+                        else:
+                            info, pitch, energy, n = ret
+                        out.append(info)
+
+                    if len(pitch) > 0:
+                        pitch_scaler.partial_fit(pitch.reshape((-1, 1)))
+                    if len(energy) > 0:
+                        energy_scaler.partial_fit(energy.reshape((-1, 1)))
+
+                    n_frames += n
+                i += 1
+            outs[dset] = out
+
+        print("Computing statistic quantities ...")
+        # Perform normalization if necessary
+        if self.pitch_normalization:
+            pitch_mean = pitch_scaler.mean_[0]
+            pitch_std = pitch_scaler.scale_[0]
+        else:
+            # A numerical trick to avoid normalization...
+            pitch_mean = 0
+            pitch_std = 1
+        if self.energy_normalization:
+            energy_mean = energy_scaler.mean_[0]
+            energy_std = energy_scaler.scale_[0]
+        else:
+            energy_mean = 0
+            energy_std = 1
+
+        pitch_min, pitch_max = self.normalize(
+            os.path.join(self.out_dir, "pitch"), pitch_mean, pitch_std
+        )
+        energy_min, energy_max = self.normalize(
+            os.path.join(self.out_dir, "energy"), energy_mean, energy_std
+        )
+
+        # Save files
+        with open(os.path.join(self.out_dir, "speakers.json"), "w") as f:
+            f.write(json.dumps(speakers))
+
+        with open(os.path.join(self.out_dir, "stats.json"), "w") as f:
+            stats = {
+                "pitch": [
+                    float(pitch_min),
+                    float(pitch_max),
+                    float(pitch_mean),
+                    float(pitch_std),
+                ],
+                "energy": [
+                    float(energy_min),
+                    float(energy_max),
+                    float(energy_mean),
+                    float(energy_std),
+                ],
+            }
+            f.write(json.dumps(stats))
+
+        print(
+            "Total time: {} hours".format(
+                n_frames * self.hop_length / self.sampling_rate / 3600
+            )
+        )
+
+        # Write metadata
+        for dset in outs:
+            out = outs[dset]
+            with open(os.path.join(self.out_dir, f"{dset}.txt"), "w", encoding="utf-8") as f:
+                for m in out:
+                    f.write(m + "\n")
+
+        return outs
+
     def build_from_path(self):
         os.makedirs((os.path.join(self.out_dir, "mel")), exist_ok=True)
         os.makedirs((os.path.join(self.out_dir, "pitch")), exist_ok=True)
