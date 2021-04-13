@@ -318,11 +318,8 @@ class ANILSystem(System):
             num_tasks=200, #should be specified for val for solid val data
         )
         meta_batch_size = self.train_config["meta"]["meta_batch_size"]
-        episodic_tasks = EpisodicBatcher( #only for train, would randomly sample
-            tasks,
-        )
         self.val_loader = DataLoader(
-            episodic_tasks.val_dataloader(),
+            tasks,
             batch_size=1,
             shuffle=False,
             collate_fn=lambda batch: batch,
