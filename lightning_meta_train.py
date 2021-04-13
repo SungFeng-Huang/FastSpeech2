@@ -35,11 +35,11 @@ def main(args, configs):
 
     # Get dataset
     train_dataset = Dataset(
-        "train.txt", preprocess_config, train_config, sort=True, drop_last=True
+        f"{preprocess_config["meta"]["train"]}.txt", preprocess_config, train_config, sort=True, drop_last=True
     )
     #TODO: re-preprocess val.txt
     val_dataset = Dataset(
-        "val.txt", preprocess_config, train_config, sort=False, drop_last=False
+        f"{preprocess_config["meta"]["val"]}.txt", preprocess_config, train_config, sort=False, drop_last=False
     )
     # group_size = 4  # Set this larger than 1 to enable sorting in Dataset
 
