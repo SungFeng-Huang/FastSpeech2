@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-
+import os
+import json
 import pytorch_lightning as pl
 import torch
 import numpy as np
@@ -14,7 +15,6 @@ from learn2learn.utils.lightning import EpisodicBatcher
 
 from model import FastSpeech2Loss, FastSpeech2
 from utils.tools import get_mask_from_lengths
-from lightning.utils import split_data
 from lightning.system import System
 from lightning.collate import get_meta_collate
 
@@ -41,7 +41,8 @@ class ANILSystem(System):
         self.train_queries  = self.train_config["meta"]["queries"]
         self.test_ways      = self.train_config["meta"]["ways"]
         self.test_shots     = self.train_config["meta"]["shots"]
-        self.test_queries   = self.train_config["meta"]["queries"]
+        self.test_queries   = 1
+        # self.test_queries   = self.train_config["meta"]["queries"]
         assert self.train_ways == self.test_ways, \
             "For ANIL, train_ways should be equal to test_ways."
         
@@ -62,110 +63,11 @@ class ANILSystem(System):
         if self.data_parallel and torch.cuda.device_count() > 1:
             self.encoder = torch.nn.DataParallel(self.encoder)
         self.total_decoder = l2l.algorithms.MAML(self.total_decoder, lr=self.adaptation_lr)
-        # self.save_hyperparameters({
-            # "train_ways": self.train_ways,
-            # "train_shots": self.train_shots,
-            # "train_queries": self.train_queries,
-            # "test_ways": self.test_ways,
-            # "test_shots": self.test_shots,
-            # "test_queries": self.test_queries,
-            # "lr": self.lr,
-            # "scheduler_step": self.scheduler_step,
-            # "scheduler_decay": self.scheduler_decay,
-            # "adaptation_lr": self.adaptation_lr,
-            # "adaptation_steps": self.adaptation_steps,
-        # })
-
-    def training_step(self, batch, batch_idx):
-        assert len(batch) == 1, "meta_batch_per_gpu"
-        assert len(batch[0]) == 2, "sup + qry"
-        assert len(batch[0][0]) == 1, "n_batch == 1"
-        assert len(batch[0][0][0]) == 12, "data with 12 elements"
-        train_loss = self.meta_learn(
-            batch, batch_idx, self.train_ways, self.train_shots, self.train_queries
-        )
-        if (self.trainer.global_step+1) % self.trainer.log_every_n_steps == 0:
-            message = f"Step {self.trainer.global_step+1}/{self.trainer.max_steps}, "
-            # tqdm.write(message + self.loss2str(train_loss))
-            self.print(message + self.loss2str(train_loss))
-
-            # self.logger[0].log_metrics(self.loss2dict(train_loss), self.trainer.global_step+1)
-        comet_log_dict = {f"train_{k}":v for k,v in self.loss2dict(train_loss).items()}
-        self.log_dict(
-            comet_log_dict,
-            sync_dist=True,
-        )
-
-        total_loss = train_loss[0]
-        # For ModelCheckpoint monitor
-        self.log(
-            "train_loss",
-            total_loss.item(),
-            logger=False,
-            sync_dist=True,
-        )
-        return total_loss
-
-    def validation_step(self, batch, batch_idx):
-        assert len(batch) == 1, "meta_batch_per_gpu"
-        assert len(batch[0]) == 2, "sup + qry"
-        assert len(batch[0][0]) == 1, "n_batch == 1"
-        assert len(batch[0][0][0]) == 12, "data with 12 elements"
-        val_loss = self.meta_learn(
-            batch, batch_idx, self.test_ways, self.test_shots, self.test_queries
-        )
-        tblog_dict = self.loss2dict(val_loss)
-
-        comet_log_dict = {f"val_{k}":v for k,v in self.loss2dict(val_loss).items()}
-        self.log_dict(
-            comet_log_dict,
-            sync_dist=True,
-        )
-
-        total_loss = val_loss[0]
-        # For ModelCheckpoint monitor
-        self.log(
-            "val_loss",
-            total_loss.item(),
-            logger=False,
-            sync_dist=True,
-        )
-        return tblog_dict
-
-    # def test_step(self, batch, batch_idx):
-        # test_loss = self.meta_learn(
-            # batch, batch_idx, self.test_ways, self.test_shots, self.test_queries
-        # )
-        # tblog_dict = self.loss2dict(test_loss)
-
-        # total_loss = test_loss[0]
-        # self.log(
-            # "test_loss",
-            # total_loss.item(),
-            # on_step=False,
-            # on_epoch=True,
-            # prog_bar=False,
-            # logger=True,
-            # sync_dist=True,
-        # )
-        # return test_loss.item()
-        # return tblog_dict
-
-    def validation_epoch_end(self, val_outputs=None):
-        """Log hp_metric to tensorboard for hparams selection."""
-        if self.trainer.global_step > 0:
-            tblog_dict = merge_dicts(val_outputs)
-            loss = self.dict2loss(tblog_dict)
-
-            message = f"Validation Step {self.trainer.global_step+1}, "
-            self.print(message + self.loss2str(loss))
-
-            # self.logger[1].log_metrics(tblog_dict, self.trainer.global_step+1)
 
     @torch.enable_grad()
     def meta_learn(self, batch, batch_idx, ways, shots, queries):
-        self.encoder.train()
         learner = self.total_decoder.clone()
+        self.encoder.train()
         learner.train()
 
         sup_batch = batch[0][0][0]
@@ -176,15 +78,231 @@ class ANILSystem(System):
 
         # Adapt the classifier
         for step in range(self.adaptation_steps):
-            preds = self.forward_learner(learner, *(sup_batch[2:]), output=sup_enc_output, src_masks=sup_src_masks)
-            # preds = learner(support)
+            preds = self.forward_learner(
+                learner, *(sup_batch[2:]), output=sup_enc_output, src_masks=sup_src_masks
+            )
             train_error = self.loss_func(sup_batch, preds)
             learner.adapt(train_error[0], allow_unused=False, allow_nograd=True)
 
         # Evaluating the adapted model
-        predictions = self.forward_learner(learner, *(qry_batch[2:]), output=qry_enc_output, src_masks=qry_src_masks)
+        predictions = self.forward_learner(
+            learner, *(qry_batch[2:]), output=qry_enc_output, src_masks=qry_src_masks
+        )
         valid_error = self.loss_func(qry_batch, predictions)
-        return valid_error
+        return valid_error, predictions
+
+    def training_step(self, batch, batch_idx):
+        assert len(batch) == 1, "meta_batch_per_gpu"
+        assert len(batch[0]) == 2, "sup + qry"
+        assert len(batch[0][0]) == 1, "n_batch == 1"
+        assert len(batch[0][0][0]) == 12, "data with 12 elements"
+
+        train_loss, predictions = self.meta_learn(
+            batch, batch_idx, self.train_ways, self.train_shots, self.train_queries
+        )
+
+        # Synthesis one sample
+        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0:
+            sup_ids = batch[0][0][0][0]
+            qry_ids = batch[0][1][0][0]
+            qry_batch = batch[0][1][0]
+            metadata = {'stage': "Training", 'sup_ids': sup_ids}
+            fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(
+                qry_batch, predictions
+            )
+            step = self.global_step+1
+            self.log_figure(
+                f"Training/step_{step}_{basename}",
+                fig
+            )
+            self.log_audio(
+                f"Training/step_{step}_{basename}_reconstructed",
+                wav_reconstruction,
+                metadata=metadata
+            )
+            self.log_audio(
+                f"Training/step_{step}_{basename}_synthesized",
+                wav_prediction,
+                metadata=metadata
+            )
+
+        # Log message to log.txt and print to stdout
+        if (self.global_step+1) % self.trainer.log_every_n_steps == 0:
+            message = f"Step {self.global_step+1}/{self.trainer.max_steps}, "
+            message += self.loss2str(train_loss)
+            self.log_text(message)
+
+        # Log metrics to CometLogger
+        comet_log_dict = {f"train_{k}":v for k,v in self.loss2dict(train_loss).items()}
+        self.log_dict(comet_log_dict, sync_dist=True)
+        return train_loss[0]
+
+    def validation_step(self, batch, batch_idx):
+        assert len(batch) == 1, "meta_batch_per_gpu"
+        assert len(batch[0]) == 2, "sup + qry"
+        assert len(batch[0][0]) == 1, "n_batch == 1"
+        assert len(batch[0][0][0]) == 12, "data with 12 elements"
+
+        sup_ids = batch[0][0][0][0]
+        qry_ids = batch[0][1][0][0]
+
+        val_loss, predictions = self.meta_learn(
+            batch, batch_idx, self.test_ways, self.test_shots, self.test_queries
+        )
+
+        # Sample one sample and log to CometLogger
+        if batch_idx == 0:
+            metadata = {'stage': "Validation", 'sup_ids': sup_ids}
+            qry_batch = batch[0][1][0]
+            fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(qry_batch, predictions)
+            step = self.global_step+1
+            self.log_figure(
+                f"Validation/step_{step}_{basename}", fig
+            )
+            self.log_audio(
+                f"Validation/step_{step}_{basename}_reconstructed", wav_reconstruction,
+                metadata=metadata
+            )
+            self.log_audio(
+                f"Validation/step_{step}_{basename}_synthesized", wav_prediction,
+                metadata=metadata
+            )
+
+        # Log loss for each sample to csv files
+        self.log_val_csv(sup_ids, qry_ids, val_loss)
+
+        # Log metrics to CometLogger
+        tblog_dict = self.loss2dict(val_loss)
+        self.log_dict(
+            {f"val_{k}":v for k, v in tblog_dict.items()}, sync_dist=True,
+        )
+        return tblog_dict
+
+    def validation_epoch_end(self, val_outputs=None):
+        """Log hp_metric to tensorboard for hparams selection."""
+        if self.global_step > 0:
+            tblog_dict = merge_dicts(val_outputs)
+            loss = self.dict2loss(tblog_dict)
+
+            # Log total loss to log.txt and print to stdout
+            message = f"Validation Step {self.global_step+1}, "
+            message += self.loss2str(loss)
+            self.log_text(message)
+
+    def train_dataloader(self):
+        # Make meta-dataset, to apply 1-way-5-shots tasks
+        id2lb = {k:v for k,v in enumerate(self.train_dataset.speaker)}
+        meta_dataset = l2l.data.MetaDataset(self.train_dataset, indices_to_labels=id2lb)
+
+        # 1-way-5-shots transforms
+        transforms = [
+            l2l.data.transforms.FusedNWaysKShots(
+                meta_dataset, n=self.train_ways, k=self.train_shots+self.train_queries,
+                replacement=True
+            ),
+            l2l.data.transforms.LoadData(meta_dataset),
+        ]
+
+        # 1-way-5-shot task dataset
+        tasks = l2l.data.TaskDataset(
+            meta_dataset,
+            task_transforms=transforms,
+            task_collate=get_meta_collate(self.train_shots, self.train_queries, False),
+        )
+
+        # Epochify task dataset, for periodic validation
+        meta_batch_size = self.train_config["meta"]["meta_batch_size"]
+        val_step = self.train_config["step"]["val_step"]
+        episodic_tasks = EpisodicBatcher(
+            tasks, epoch_length=meta_batch_size*val_step,
+        )
+
+        # DataLoader, batch_size = batch size on each gpu
+        self.train_loader = DataLoader(
+            episodic_tasks.train_dataloader(),
+            batch_size=1,
+            shuffle=True,
+            collate_fn=lambda batch: batch,
+            num_workers=8,
+        )
+        return self.train_loader
+
+    def val_dataloader(self):
+        # Fix random seed for resume training and comparison
+        pl.seed_everything(42)
+
+        # Make meta-dataset, to apply 1-way-5-shots tasks
+        id2lb = {k:v for k,v in enumerate(self.val_dataset.speaker)}
+        meta_dataset = l2l.data.MetaDataset(self.val_dataset, indices_to_labels=id2lb)
+
+        # 1-way-5-shots tasks for each speaker
+        val_tasks = []
+        task_per_speaker = 8
+        for label, indices in meta_dataset.labels_to_indices.items():
+            if len(indices) >= self.test_shots+self.test_queries:
+                transforms = [
+                    l2l.data.transforms.FusedNWaysKShots(
+                        meta_dataset, n=self.test_ways, k=self.test_shots+self.test_queries,
+                        replacement=False, filter_labels=[label]
+                    ),
+                    l2l.data.transforms.LoadData(meta_dataset),
+                ]
+                tasks = l2l.data.TaskDataset(
+                    meta_dataset,
+                    task_transforms=transforms,
+                    task_collate=get_meta_collate(self.test_shots, self.test_queries, False),
+                    num_tasks=task_per_speaker,
+                )
+                val_tasks.append(tasks)
+        val_concat_tasks = torch.utils.data.ConcatDataset(val_tasks)
+
+        # Pre-run validation dataset to setup ids (with settled random seed)
+        val_SQids = []
+        self.val_SQids2vid = {}
+        if not hasattr(self, 'log_dir'):
+            self.log_dir = os.path.join(self.logger[0]._save_dir, self.logger[0].version)
+            os.makedirs(self.log_dir, exist_ok=True)
+        for i, task in enumerate(val_concat_tasks):
+            sup_ids = task[0][0][0]
+            qry_ids = task[1][0][0]
+            val_SQids.append({'sup_id': sup_ids, 'qry_id': qry_ids})
+
+            SQids = f"{'-'.join(sup_ids)}.{'-'.join(qry_ids)}"
+            self.val_SQids2vid[SQids] = f"val_{i:03d}"
+            os.makedirs(os.path.join(self.log_dir, "val_csv"), exist_ok=True)
+            with open(os.path.join(self.log_dir, "val_csv", f"{self.val_SQids2vid[SQids]}.csv"), 'w') as f:
+                f.write(
+                    "step, total_loss, mel_loss, mel_postnet_loss, pitch_loss, energy_loss, duration_loss\n"
+                )
+        with open(os.path.join(self.log_dir, "val_SQids.json"), 'w') as f:
+            json.dump(val_SQids, f, indent=4)
+
+        # DataLoader
+        self.val_loader = DataLoader(
+            val_concat_tasks,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=lambda batch: batch,
+            num_workers=8,
+        )
+        return self.val_loader
+
+    def on_save_checkpoint(self, checkpoint):
+        super().on_save_checkpoint(checkpoint)
+        checkpoint["val_SQids2vid"] = self.val_SQids2vid
+        return checkpoint
+
+    def on_load_checkpoint(self, checkpoint):
+        super().on_load_checkpoint(checkpoint)
+        self.val_SQids2vid = checkpoint["val_SQids2vid"]
+
+    def log_val_csv(self, sup_ids, qry_ids, losses):
+        SQids = f"{'-'.join(sup_ids)}.{'-'.join(qry_ids)}"
+        with open(os.path.join(self.log_dir, "val_csv", f"{self.val_SQids2vid[SQids]}.csv"), 'a') as f:
+            f.write(f"{self.global_step}")
+            for loss in losses:
+                f.write(f", {loss.item()}")
+            f.write("\n")
 
     def forward_encoder(self, *batch):
         texts = batch[1]
@@ -203,11 +321,8 @@ class ANILSystem(System):
         p_control=1.0, e_control=1.0, d_control=1.0,
         output=None, src_masks=None,
     ):
-        # src_masks = get_mask_from_lengths(src_lens, max_src_len)
         mel_masks = (
-            get_mask_from_lengths(mel_lens, max_mel_len)
-            if mel_lens is not None
-            else None
+            get_mask_from_lengths(mel_lens, max_mel_len) if mel_lens is not None else None
         )
 
         if learner.module['speaker_emb'] is not None:
@@ -216,24 +331,10 @@ class ANILSystem(System):
             )
 
         (
-            output,
-            p_predictions,
-            e_predictions,
-            log_d_predictions,
-            d_rounded,
-            mel_lens,
-            mel_masks,
+            output, p_predictions, e_predictions, log_d_predictions, d_rounded, mel_lens, mel_masks,
         ) = learner.module['variance_adaptor'](
-            output,
-            src_masks,
-            mel_masks,
-            max_mel_len,
-            p_targets,
-            e_targets,
-            d_targets,
-            p_control,
-            e_control,
-            d_control,
+            output, src_masks, mel_masks, max_mel_len,
+            p_targets, e_targets, d_targets, p_control, e_control, d_control,
         )
 
         if learner.module['speaker_emb'] is not None:
@@ -247,82 +348,7 @@ class ANILSystem(System):
         postnet_output = learner.module['postnet'](output) + output
 
         return (
-            output,
-            postnet_output,
-            p_predictions,
-            e_predictions,
-            log_d_predictions,
-            d_rounded,
-            src_masks,
-            mel_masks,
-            src_lens,
-            mel_lens,
+            output, postnet_output,
+            p_predictions, e_predictions, log_d_predictions, d_rounded,
+            src_masks, mel_masks, src_lens, mel_lens,
         )
-
-    def train_dataloader(self):
-        filter_label = False
-
-        id2lb = {k:v for k,v in enumerate(self.train_dataset.speaker)}
-        meta_dataset = l2l.data.MetaDataset(self.train_dataset, indices_to_labels=id2lb)
-        if filter_label:
-            filtered_labels = [label for label, indices in meta_dataset.labels_to_indices.items()
-                               if len(indices) >= self.train_shots+self.train_queries]
-            meta_dataset = l2l.data.FilteredMetaDataset(meta_dataset, filtered_labels)
-        transforms = [
-            l2l.data.transforms.FusedNWaysKShots(meta_dataset,
-                                                 n=self.train_ways,
-                                                 k=self.train_shots+self.train_queries,
-                                                 replacement=True),
-            l2l.data.transforms.LoadData(meta_dataset),
-        ]
-        tasks = l2l.data.TaskDataset(
-            meta_dataset,
-            task_transforms=transforms,
-            task_collate=get_meta_collate(self.train_shots, self.train_queries, False),
-        )
-        meta_batch_size = self.train_config["meta"]["meta_batch_size"]
-        val_step = self.train_config["step"]["val_step"]
-        episodic_tasks = EpisodicBatcher( #only for train, would randomly sample
-            tasks,
-            epoch_length=meta_batch_size*val_step,
-        )
-        self.train_loader = DataLoader(
-            episodic_tasks.train_dataloader(),
-            batch_size=1,   #batch_size on each gpu
-            shuffle=True,
-            collate_fn=lambda batch: batch,
-            num_workers=8,
-        )
-        return self.train_loader
-
-    def val_dataloader(self):
-        filter_label = False
-
-        id2lb = {k:v for k,v in enumerate(self.val_dataset.speaker)}
-        meta_dataset = l2l.data.MetaDataset(self.val_dataset, indices_to_labels=id2lb)
-        if filter_label:
-            filtered_labels = [label for label, indices in meta_dataset.labels_to_indices.items()
-                               if len(indices) >= self.test_shots+self.test_queries]
-            meta_dataset = l2l.data.FilteredMetaDataset(meta_dataset, filtered_labels)
-        transforms = [
-            l2l.data.transforms.FusedNWaysKShots(meta_dataset,
-                                                 n=self.test_ways,
-                                                 k=self.test_shots+self.test_queries,
-                                                 replacement=True),
-            l2l.data.transforms.LoadData(meta_dataset),
-        ]
-        tasks = l2l.data.TaskDataset(
-            meta_dataset,
-            task_transforms=transforms,
-            task_collate=get_meta_collate(self.test_shots, self.test_queries, False),
-            num_tasks=200, #should be specified for val for solid val data
-        )
-        meta_batch_size = self.train_config["meta"]["meta_batch_size"]
-        self.val_loader = DataLoader(
-            tasks,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=lambda batch: batch,
-            num_workers=8,
-        )
-        return self.val_loader
