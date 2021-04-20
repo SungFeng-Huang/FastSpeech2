@@ -223,6 +223,7 @@ def plot_mel(data, stats, titles):
         ax.set_facecolor("None")
         return ax
 
+    fig.subplots_adjust(hspace=0.3)
     for i in range(len(data)):
         mel, pitch, energy = data[i]
         pitch = pitch * pitch_std + pitch_mean
