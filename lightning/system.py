@@ -245,8 +245,8 @@ class System(pl.LightningModule):
     def on_validation_start(self):
         if self.global_step == 0:
             if not hasattr(self, 'log_dir'):
-            self.log_dir = os.path.join(self.logger[0]._save_dir, self.logger[0].version)
-            os.makedirs(self.log_dir, exist_ok=True)
+                self.log_dir = os.path.join(self.logger[0]._save_dir, self.logger[0].version)
+                os.makedirs(self.log_dir, exist_ok=True)
 
     def configure_optimizers(self):
         """Initialize optimizers, batch-wise and epoch-wise schedulers."""
