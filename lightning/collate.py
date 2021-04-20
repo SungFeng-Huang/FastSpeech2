@@ -45,7 +45,6 @@ def get_meta_collate(shots, queries, sort=True):
     batch_size = shots + queries
     def collate_fn(data):
         data_size = len(data)
-        assert shots == queries
         assert data_size % batch_size == 0, "Assum batch_size = ways * (shots + queries)"
         assert data_size // batch_size > 0, "Assum batch_size = ways * (shots + queries)"
 
@@ -58,8 +57,8 @@ def get_meta_collate(shots, queries, sort=True):
         idx_arr = idx_arr.reshape((-1, batch_size))
         # idx_arr = idx_arr.reshape((-1, batch_size)).tolist()
 
-        sup_idx = np.zeros(data_size, dtype=bool)
-        sup_idx[np.arange(shots) * 2] = True
+        sup_idx = np.zeros(batch_size, dtype=bool)
+        sup_idx[np.arange(shots)] = True
         # sup_idx[np.random.choice(batch_size, shots)] = True
         qry_idx = ~sup_idx
 
