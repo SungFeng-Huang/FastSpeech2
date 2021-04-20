@@ -71,7 +71,7 @@ def main(args, configs):
     # train_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_train")
     # val_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_val")
     comet_kwargs = {
-        "experiment_key": None,
+        "experiment_key": args.exp_key,
         "log_code": True,
         "log_graph": True,
         "parse_args": True,
@@ -108,7 +108,7 @@ def main(args, configs):
 
     callbacks = []
     checkpoint = ModelCheckpoint(
-        monitor="train_loss",
+        monitor="train_Loss/total_loss",
         mode="min",
         save_top_k=-1,
         every_n_train_steps=save_step,
@@ -131,7 +131,9 @@ def main(args, configs):
 
     gpus = -1 if torch.cuda.is_available() else None
     distributed_backend = "ddp" if torch.cuda.is_available() else None
-    resume_ckpt = None #NOTE
+    resume_ckpt = None
+    if args.exp_key is not None:
+        resume_ckpt = f'./output/ckpt/LibriTTS/meta-tts/{args.exp_key}/checkpoints/{args.ckpt_file}' #NOTE
 
     trainer = pl.Trainer(
         max_steps=total_step,
@@ -153,104 +155,6 @@ def main(args, configs):
         profiler=profiler,
     )
     trainer.fit(system)
-
-    exit()
-
-    while True:
-        inner_bar = tqdm(total=len(loader), desc="Epoch {}".format(epoch), position=1)
-        for batchs in loader:
-            for batch in batchs:
-                batch = to_device(batch, device)
-
-                # Forward
-                output = model(*(batch[2:]))
-
-                # Cal Loss
-                losses = Loss(batch, output)
-                total_loss = losses[0]
-
-                # Backward
-                total_loss = total_loss / grad_acc_step
-                total_loss.backward()
-                if step % grad_acc_step == 0:
-                    # Clipping gradients to avoid gradient explosion
-                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip_thresh)
-
-                    # Update weights
-                    optimizer.step_and_update_lr()
-                    optimizer.zero_grad()
-
-                if step % log_step == 0:
-                    losses = [l.item() for l in losses]
-                    message1 = "Step {}/{}, ".format(step, total_step)
-                    message2 = "Total Loss: {:.4f}, Mel Loss: {:.4f}, Mel PostNet Loss: {:.4f}, Pitch Loss: {:.4f}, Energy Loss: {:.4f}, Duration Loss: {:.4f}".format(
-                        *losses
-                    )
-
-                    with open(os.path.join(train_log_path, "log.txt"), "a") as f:
-                        f.write(message1 + message2 + "\n")
-
-                    outer_bar.write(message1 + message2)
-
-                    log(train_logger, step, losses=losses)
-
-                if step % synth_step == 0:
-                    fig, wav_reconstruction, wav_prediction, tag = synth_one_sample(
-                        batch,
-                        output,
-                        vocoder,
-                        model_config,
-                        preprocess_config,
-                    )
-                    log(
-                        train_logger,
-                        fig=fig,
-                        tag="Training/step_{}_{}".format(step, tag),
-                    )
-                    sampling_rate = preprocess_config["preprocessing"]["audio"][
-                        "sampling_rate"
-                    ]
-                    log(
-                        train_logger,
-                        audio=wav_reconstruction,
-                        sampling_rate=sampling_rate,
-                        tag="Training/step_{}_{}_reconstructed".format(step, tag),
-                    )
-                    log(
-                        train_logger,
-                        audio=wav_prediction,
-                        sampling_rate=sampling_rate,
-                        tag="Training/step_{}_{}_synthesized".format(step, tag),
-                    )
-
-                if step % val_step == 0:
-                    model.eval()
-                    message = evaluate(model, step, configs, val_logger, vocoder)
-                    with open(os.path.join(val_log_path, "log.txt"), "a") as f:
-                        f.write(message + "\n")
-                    outer_bar.write(message)
-
-                    model.train()
-
-                if step % save_step == 0:
-                    torch.save(
-                        {
-                            "model": model.module.state_dict(),
-                            "optimizer": optimizer._optimizer.state_dict(),
-                        },
-                        os.path.join(
-                            train_config["path"]["ckpt_path"],
-                            "{}.pth.tar".format(step),
-                        ),
-                    )
-
-                if step == total_step:
-                    quit()
-                step += 1
-                outer_bar.update(1)
-
-            inner_bar.update(1)
-        epoch += 1
 
 
 if __name__ == "__main__":
@@ -275,6 +179,17 @@ if __name__ == "__main__":
         "-s", "--meta_batch_size", type=int, help="meta batch size",
         default=torch.cuda.device_count(),
     )
+    parser.add_argument(
+        "-e", "--exp_key", type=str, help="experiment key",
+        default=None,
+    )
+    parser.add_argument(
+        "-c", "--ckpt_file", type=str, help="ckpt file name",
+        default=None,
+    )
+    parser.add_argument(
+        "-d", "--dev", action="store_true", help="dev mode"
+    )
     args = parser.parse_args()
 
     # Read Config
@@ -284,7 +199,12 @@ if __name__ == "__main__":
     model_config = yaml.load(open(args.model_config, "r"), Loader=yaml.FullLoader)
     train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
     train_config["meta"]["meta_batch_size"] = args.meta_batch_size
-    print(args.meta_batch_size)
+    if args.dev:
+        train_config["step"]["synth_step"] = 100
+        train_config["step"]["val_step"] = 100
+        train_config["step"]["save_step"] = 100
+        model_config["transformer"]["encoder_layer"] = 2
+        model_config["transformer"]["decoder_layer"] = 2
     configs = (preprocess_config, model_config, train_config)
 
     main(args, configs)
