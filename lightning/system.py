@@ -1,12 +1,17 @@
 # Reference:
 # https://github.com/asteroid-team/asteroid/blob/master/asteroid/engine/system.py
 
-import pytorch_lightning as pl
-import torch
-import numpy as np
+import os
+import json
 from argparse import Namespace
 from tqdm import tqdm
+import torch
+import numpy as np
+import pytorch_lightning as pl
+from scipy.io import wavfile
+
 from pytorch_lightning.loggers.base import merge_dicts
+from pytorch_lightning.utilities import rank_zero_only
 from torch.utils.data import DataLoader, BatchSampler, RandomSampler, SequentialSampler
 
 from model import FastSpeech2Loss, FastSpeech2
@@ -15,6 +20,7 @@ from lightning.scheduler import get_scheduler
 from lightning.collate import get_single_collate
 from lightning.sampler import GroupBatchSampler, DistributedBatchSampler
 from lightning.utils import LightningMelGAN
+from utils.tools import expand, plot_mel
 
 
 class System(pl.LightningModule):
@@ -130,7 +136,7 @@ class System(pl.LightningModule):
         """
         output = self(*(batch[2:]))
         loss = self.loss_func(batch, output)
-        return loss
+        return loss, output
 
     def loss2str(self, loss):
         return self.dict2str(self.loss2dict(loss))
@@ -184,13 +190,20 @@ class System(pl.LightningModule):
         Returns:
             torch.Tensor, the value of the loss.
         """
-        loss = self.common_step(batch, batch_nb, train=True)
+        loss, output = self.common_step(batch, batch_nb, train=True)
 
-        if (self.trainer.global_step+1) % self.trainer.log_every_n_steps == 0:
-            message = f"Step {self.trainer.global_step+1}/{self.trainer.max_steps}, "
+        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0:
+            fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(batch, output)
+            step = self.global_step+1
+            self.log_figure(f"Training/step_{step}_{basename}", fig)
+            self.log_audio(f"Training/step_{step}_{basename}_reconstructed", wav_reconstruction)
+            self.log_audio(f"Training/step_{step}_{basename}_synthesized", wav_prediction)
+
+        if (self.global_step+1) % self.trainer.log_every_n_steps == 0:
+            message = f"Step {self.global_step+1}/{self.trainer.max_steps}, "
             tqdm.write(message + self.loss2str(loss))
 
-            self.logger[0].log_metrics(self.loss2dict(loss), self.trainer.global_step+1)
+            self.logger[0].log_metrics(self.loss2dict(loss), self.global_step+1)
 
         total_loss = loss[0]
         self.log('train_loss', total_loss)
@@ -204,23 +217,36 @@ class System(pl.LightningModule):
                 in most cases) but can be something else.
             batch_nb (int): The number of the batch in the epoch.
         """
-        loss = self.common_step(batch, batch_nb, train=False)
+        loss, output = self.common_step(batch, batch_nb, train=False)
         tblog_dict = self.loss2dict(loss)
+
+        if batch_nb == 0:
+            fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(batch, output)
+            step = self.global_step+1
+            self.log_figure(f"Validation/step_{step}_{basename}", fig)
+            self.log_audio(f"Validation/step_{step}_{basename}_reconstructed", wav_reconstruction)
+            self.log_audio(f"Validation/step_{step}_{basename}_synthesized", wav_prediction)
 
         total_loss = loss[0]
         self.log('val_loss', total_loss)
         return tblog_dict
 
-    def validation_epoch_end(self, val_outputs=None):
+    def validation_epoch_end(self, val_dicts=None):
         """Log hp_metric to tensorboard for hparams selection."""
-        if self.trainer.global_step > 0:
-            tblog_dict = merge_dicts(val_outputs)
+        if self.global_step > 0:
+            tblog_dict = merge_dicts(val_dicts)
             loss = self.dict2loss(tblog_dict)
 
-            message = f"Validation Step {self.trainer.global_step+1}, "
+            message = f"Validation Step {self.global_step+1}, "
             tqdm.write(message + self.loss2str(loss))
 
-            self.logger[1].log_metrics(tblog_dict, self.trainer.global_step+1)
+            self.logger[1].log_metrics(tblog_dict, self.global_step+1)
+
+    def on_validation_start(self):
+        if self.global_step == 0:
+            if not hasattr(self, 'log_dir'):
+            self.log_dir = os.path.join(self.logger[0]._save_dir, self.logger[0].version)
+            os.makedirs(self.log_dir, exist_ok=True)
 
     def configure_optimizers(self):
         """Initialize optimizers, batch-wise and epoch-wise schedulers."""
@@ -310,4 +336,115 @@ class System(pl.LightningModule):
         checkpoint["preprocess_config"] = self.preprocess_config
         checkpoint["train_config"] = self.train_config
         checkpoint["model_config"] = self.model_config
+        checkpoint["log_dir"] = self.log_dir
         return checkpoint
+
+    def on_load_checkpoint(self, checkpoint):
+        self.preprocess_config = checkpoint["preprocess_config"]
+        self.train_config = checkpoint["train_config"]
+        self.model_config = checkpoint["model_config"]
+        self.log_dir = checkpoint["log_dir"]
+
+    @rank_zero_only
+    def synth_one_sample(self, targets, predictions):
+        """Synthesize the first sample of the batch."""
+        basename = targets[0][0]
+        src_len = predictions[8][0].item()
+        mel_len = predictions[9][0].item()
+        mel_target = targets[6][0, :mel_len].detach().transpose(0, 1)
+        mel_prediction = predictions[1][0, :mel_len].detach().transpose(0, 1)
+        duration = targets[11][0, :src_len].detach().cpu().numpy()
+        if self.preprocess_config["preprocessing"]["pitch"]["feature"] == "phoneme_level":
+            pitch = targets[9][0, :src_len].detach().cpu().numpy()
+            pitch = expand(pitch, duration)
+        else:
+            pitch = targets[9][0, :mel_len].detach().cpu().numpy()
+        if self.preprocess_config["preprocessing"]["energy"]["feature"] == "phoneme_level":
+            energy = targets[10][0, :src_len].detach().cpu().numpy()
+            energy = expand(energy, duration)
+        else:
+            energy = targets[10][0, :mel_len].detach().cpu().numpy()
+
+        with open(
+            os.path.join(self.preprocess_config["path"]["preprocessed_path"], "stats.json")
+        ) as f:
+            stats = json.load(f)
+            stats = stats["pitch"] + stats["energy"][:2]
+
+        fig = plot_mel(
+            [
+                (mel_prediction.cpu().numpy(), pitch, energy),
+                (mel_target.cpu().numpy(), pitch, energy),
+            ],
+            stats,
+            ["Synthetized Spectrogram", "Ground-Truth Spectrogram"],
+        )
+
+        if self.vocoder.mel2wav is not None:
+            max_wav_value = self.preprocess_config["preprocessing"]["audio"]["max_wav_value"]
+
+            wav_reconstruction = self.vocoder.infer(mel_target.unsqueeze(0), max_wav_value)[0]
+            wav_prediction = self.vocoder.infer(mel_prediction.unsqueeze(0), max_wav_value)[0]
+        else:
+            wav_reconstruction = wav_prediction = None
+
+        return fig, wav_reconstruction, wav_prediction, basename
+
+    def log_audio(self, tag, audio, metadata=None):
+        train = self.trainer.training
+        step = self.global_step+1
+        sample_rate = self.preprocess_config["preprocessing"]["audio"]["sampling_rate"]
+        if isinstance(self.logger[0], pl.loggers.CometLogger):
+            stage, basename = tag.split('/', 1)
+            basename = basename.split('_')
+            idx = '_'.join(basename[2:-1])
+            if metadata is None:
+                metadata = {'stage': stage}
+            else:
+                metadata = metadata.copy()
+            audio_type = basename[-1]
+            metadata.update({'type': audio_type, 'id': idx})
+            file_name = f"{idx}_{audio_type}_{step}.wav"
+
+            os.makedirs(os.path.join(self.log_dir, "audio", stage), exist_ok=True)
+            wavfile.write(os.path.join(self.log_dir, "audio", f"{tag}.wav"), sample_rate, audio)
+
+            self.logger[0].experiment.log_audio(
+                audio_data=audio / max(abs(audio)),
+                sample_rate=sample_rate,
+                file_name=file_name,
+                step=step,
+                metadata=metadata,
+            )
+        elif isinstance(self.logger[int(not train)], pl.loggers.TensorBoardLogger):
+            self.logger[int(not train)].experiment.add_audio(
+                tag=tag,
+                snd_tensor=audio / max(abs(audio)),
+                global_step=step,
+                sample_rate=sample_rate,
+            )
+        else:
+            self.print("Failed to log audio: not finding correct logger type")
+
+    def log_figure(self, tag, figure):
+        train = self.trainer.training
+        step = self.global_step+1
+        if isinstance(self.logger[0], pl.loggers.CometLogger):
+            self.logger[0].experiment.log_figure(
+                figure_name=tag,
+                figure=figure,
+                step=step,
+            )
+        elif isinstance(self.logger[int(not train)], pl.loggers.TensorBoardLogger):
+            self.logger[int(not train)].experiment.add_figure(
+                tag=tag,
+                figure=figure,
+                global_step=step,
+            )
+        else:
+            self.print("Failed to log figure: not finding correct logger type")
+
+    def log_text(self, text):
+        self.print(text)
+        with open(os.path.join(self.log_dir, 'log.txt'), 'a') as f:
+            f.write(text + '\n')
