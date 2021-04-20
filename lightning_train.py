@@ -34,10 +34,10 @@ def main(args, configs):
 
     # Get dataset
     train_dataset = Dataset(
-        "train.txt", preprocess_config, train_config, sort=True, drop_last=True
+        "train-clean-100-train.txt", preprocess_config, train_config, sort=True, drop_last=True
     )
     val_dataset = Dataset(
-        "val.txt", preprocess_config, train_config, sort=False, drop_last=False
+        "train-clean-100-val.txt", preprocess_config, train_config, sort=False, drop_last=False
     )
     group_size = 1
 
