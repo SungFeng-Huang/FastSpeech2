@@ -17,7 +17,7 @@ step:
   log_step: 100
   synth_step: 1000
   val_step: 1000
-  save_step: 100000
+  save_step: 1000
 meta:
   ways: 1
   shots: 5
