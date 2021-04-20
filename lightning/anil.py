@@ -101,10 +101,11 @@ class ANILSystem(System):
             batch, batch_idx, self.train_ways, self.train_shots, self.train_queries
         )
 
+        sup_ids = batch[0][0][0][0]
+        qry_ids = batch[0][1][0][0]
+
         # Synthesis one sample
-        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0:
-            sup_ids = batch[0][0][0][0]
-            qry_ids = batch[0][1][0][0]
+        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0 and self.local_rank == 0:
             qry_batch = batch[0][1][0]
             metadata = {'stage': "Training", 'sup_ids': sup_ids}
             fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(
@@ -151,7 +152,7 @@ class ANILSystem(System):
         )
 
         # Sample one sample and log to CometLogger
-        if batch_idx == 0:
+        if batch_idx == 0 and self.local_rank == 0:
             metadata = {'stage': "Validation", 'sup_ids': sup_ids}
             qry_batch = batch[0][1][0]
             fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(qry_batch, predictions)
@@ -229,7 +230,7 @@ class ANILSystem(System):
 
     def val_dataloader(self):
         # Fix random seed for resume training and comparison
-        pl.seed_everything(42)
+        pl.seed_everything(42, True)
 
         # Make meta-dataset, to apply 1-way-5-shots tasks
         id2lb = {k:v for k,v in enumerate(self.val_dataset.speaker)}
