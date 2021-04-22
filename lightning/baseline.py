@@ -37,6 +37,8 @@ class BaselineSystem(System):
     ):
         super().__init__(model, optimizer, loss_func, train_dataset, val_dataset, scheduler, configs, vocoder)
 
+        # All of the settings below are for few-shot validation
+
         self.test_ways      = self.train_config["meta"]["ways"]
         self.test_shots     = self.train_config["meta"]["shots"]
         self.test_queries   = 1
