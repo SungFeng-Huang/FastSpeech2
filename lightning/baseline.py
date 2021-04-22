@@ -16,11 +16,11 @@ from learn2learn.utils.lightning import EpisodicBatcher
 from model import FastSpeech2Loss, FastSpeech2
 from utils.tools import get_mask_from_lengths
 from lightning.system import System
-from lightning.collate import get_meta_collate
-from lightning.utils import seed_all
+from lightning.collate import get_meta_collate, get_multi_collate, get_single_collate
+from lightning.utils import seed_all, EpisodicInfiniteWrapper
 
 
-class ANILSystem(System):
+class BaselineSystem(System):
     """A PyTorch Lightning module for ANIL for FastSpeech2.
     """
 
@@ -37,15 +37,10 @@ class ANILSystem(System):
     ):
         super().__init__(model, optimizer, loss_func, train_dataset, val_dataset, scheduler, configs, vocoder)
 
-        self.train_ways     = self.train_config["meta"]["ways"]
-        self.train_shots    = self.train_config["meta"]["shots"]
-        self.train_queries  = self.train_config["meta"]["queries"]
         self.test_ways      = self.train_config["meta"]["ways"]
         self.test_shots     = self.train_config["meta"]["shots"]
         self.test_queries   = 1
         # self.test_queries   = self.train_config["meta"]["queries"]
-        assert self.train_ways == self.test_ways, \
-            "For ANIL, train_ways should be equal to test_ways."
         
         meta_config = self.train_config["meta"]
         self.adaptation_steps   = meta_config.get("adaptation_steps", LightningMAML.adaptation_steps)
@@ -93,51 +88,7 @@ class ANILSystem(System):
         return valid_error, predictions
 
     def training_step(self, batch, batch_idx):
-        assert len(batch) == 1, "meta_batch_per_gpu"
-        assert len(batch[0]) == 2, "sup + qry"
-        assert len(batch[0][0]) == 1, "n_batch == 1"
-        assert len(batch[0][0][0]) == 12, "data with 12 elements"
-
-        train_loss, predictions = self.meta_learn(
-            batch, batch_idx, self.train_ways, self.train_shots, self.train_queries
-        )
-
-        sup_ids = batch[0][0][0][0]
-        qry_ids = batch[0][1][0][0]
-
-        # Synthesis one sample
-        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0 and self.local_rank == 0:
-            qry_batch = batch[0][1][0]
-            metadata = {'stage': "Training", 'sup_ids': sup_ids}
-            fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(
-                qry_batch, predictions
-            )
-            step = self.global_step+1
-            self.log_figure(
-                f"Training/step_{step}_{basename}",
-                fig
-            )
-            self.log_audio(
-                f"Training/step_{step}_{basename}_reconstructed",
-                wav_reconstruction,
-                metadata=metadata
-            )
-            self.log_audio(
-                f"Training/step_{step}_{basename}_synthesized",
-                wav_prediction,
-                metadata=metadata
-            )
-
-        # Log message to log.txt and print to stdout
-        if (self.global_step+1) % self.trainer.log_every_n_steps == 0:
-            message = f"Step {self.global_step+1}/{self.trainer.max_steps}, "
-            message += self.loss2str(train_loss)
-            self.log_text(message)
-
-        # Log metrics to CometLogger
-        comet_log_dict = {f"train_{k}":v for k,v in self.loss2dict(train_loss).items()}
-        self.log_dict(comet_log_dict, sync_dist=True)
-        return train_loss[0]
+        return super().training_step(batch, batch_idx)
 
     def validation_step(self, batch, batch_idx):
         assert len(batch) == 1, "meta_batch_per_gpu"
@@ -152,7 +103,7 @@ class ANILSystem(System):
             batch, batch_idx, self.test_ways, self.test_shots, self.test_queries
         )
 
-        # Sample one sample and log to CometLogger
+        # Synthesis one sample and log to CometLogger
         if batch_idx == 0 and self.local_rank == 0:
             metadata = {'stage': "Validation", 'sup_ids': sup_ids}
             qry_batch = batch[0][1][0]
@@ -192,39 +143,21 @@ class ANILSystem(System):
             self.log_text(message)
 
     def train_dataloader(self):
-        # Make meta-dataset, to apply 1-way-5-shots tasks
-        id2lb = {k:v for k,v in enumerate(self.train_dataset.speaker)}
-        meta_dataset = l2l.data.MetaDataset(self.train_dataset, indices_to_labels=id2lb)
-
-        # 1-way-5-shots transforms
-        transforms = [
-            l2l.data.transforms.FusedNWaysKShots(
-                meta_dataset, n=self.train_ways, k=self.train_shots+self.train_queries,
-                replacement=True
-            ),
-            l2l.data.transforms.LoadData(meta_dataset),
-        ]
-
-        # 1-way-5-shot task dataset
-        tasks = l2l.data.TaskDataset(
-            meta_dataset,
-            task_transforms=transforms,
-            task_collate=get_meta_collate(self.train_shots, self.train_queries, False),
-        )
-
-        # Epochify task dataset, for periodic validation
-        meta_batch_size = self.train_config["meta"]["meta_batch_size"]
-        val_step = self.train_config["step"]["val_step"]
-        episodic_tasks = EpisodicBatcher(
-            tasks, epoch_length=meta_batch_size*val_step,
-        )
-
-        # DataLoader, batch_size = batch size on each gpu
+        if not isinstance(self.train_dataset, EpisodicInfiniteWrapper):
+            meta_batch_size = self.train_config["meta"]["meta_batch_size"]
+            train_ways      = self.train_config["meta"]["ways"]
+            train_shots     = self.train_config["meta"]["shots"]
+            train_queries   = self.train_config["meta"]["queries"]
+            batch_size = train_ways * (train_shots + train_queries) * meta_batch_size
+            # batch_size = self.train_config["optimizer"]["batch_size"]
+            val_step = self.train_config["step"]["val_step"]
+            self.train_dataset = EpisodicInfiniteWrapper(self.train_dataset, val_step*batch_size)
         self.train_loader = DataLoader(
-            episodic_tasks.train_dataloader(),
-            batch_size=1,
+            self.train_dataset,
             shuffle=True,
-            collate_fn=lambda batch: batch,
+            batch_size=batch_size,
+            drop_last=True,
+            collate_fn=get_single_collate(False),
             num_workers=8,
         )
         return self.train_loader
@@ -261,9 +194,9 @@ class ANILSystem(System):
         if not hasattr(self, 'log_dir'):
             self.log_dir = os.path.join(self.logger[0]._save_dir, self.logger[0].version)
             os.makedirs(self.log_dir, exist_ok=True)
-        # Fix random seed for resume training and comparison
-        # Don't use pl.seed_everything(42, True) if don't want to setup training
-        # seed. Use my seed_all instead.
+        # Fix random seed for validation set. Don't use
+        # pl.seed_everything(42, True) if don't want to affect training seed.
+        # Use my seed_all instead.
         with seed_all(43):
             for i, task in enumerate(val_concat_tasks):
                 sup_ids = task[0][0][0]
@@ -277,8 +210,8 @@ class ANILSystem(System):
                     f.write(
                         "step, total_loss, mel_loss, mel_postnet_loss, pitch_loss, energy_loss, duration_loss\n"
                     )
-            with open(os.path.join(self.log_dir, "val_SQids.json"), 'w') as f:
-                json.dump(val_SQids, f, indent=4)
+        with open(os.path.join(self.log_dir, "val_SQids.json"), 'w') as f:
+            json.dump(val_SQids, f, indent=4)
 
         # DataLoader
         self.val_loader = DataLoader(

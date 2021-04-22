@@ -1,6 +1,8 @@
 import pytorch_lightning as pl
 import numpy as np
 import torch
+import random
+from contextlib import contextmanager
 
 
 class LightningMelGAN(pl.LightningModule):
@@ -24,4 +26,32 @@ class LightningMelGAN(pl.LightningModule):
                 wavs[i] = wavs[i][: lengths[i]]
         return wavs
 
+@contextmanager
+def seed_all(seed=None, devices=None):
+    rstate = random.getstate()
+    nstate = np.random.get_state()
+    with torch.random.fork_rng(devices):
+        random.seed(seed)
+        np.random.seed(seed)
+        if seed is None:
+            seed = torch.seed()
+            torch.cuda.manual_seed_all(seed)
+        else:
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+        yield
+    random.setstate(rstate)
+    np.random.set_state(nstate)
 
+class EpisodicInfiniteWrapper:
+    def __init__(self, dataset, epoch_length):
+        self.dataset = dataset
+        self.epoch_length = epoch_length
+
+    def __getitem__(self, idx):
+        # new_idx = random.randrange(len(self.dataset))
+        # return self.dataset[new_idx]
+        return random.choice(self.dataset)
+
+    def __len__(self):
+        return self.epoch_length

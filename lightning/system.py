@@ -71,7 +71,6 @@ class System(pl.LightningModule):
         scheduler=None,
         configs=None,
         vocoder=None,
-        group_dataloader=False,
     ):
         super().__init__()
         preprocess_config, model_config, train_config = configs
@@ -99,7 +98,6 @@ class System(pl.LightningModule):
         # summary writer doesn't support None for now, convert to strings.
         # See https://github.com/pytorch/pytorch/issues/33140
         # self.hparams = Namespace(**self.config_to_hparams(self.config))
-        self.group_dataloader = group_dataloader
 
     def forward(self, *args, **kwargs):
         """Applies forward pass of the model.
@@ -192,22 +190,30 @@ class System(pl.LightningModule):
         """
         loss, output = self.common_step(batch, batch_nb, train=True)
 
-        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0:
+        # Synthesis one sample and log to CometLogger
+        if (self.global_step+1) % self.train_config["step"]["synth_step"] == 0 and self.local_rank == 0:
             fig, wav_reconstruction, wav_prediction, basename = self.synth_one_sample(batch, output)
             step = self.global_step+1
-            self.log_figure(f"Training/step_{step}_{basename}", fig)
-            self.log_audio(f"Training/step_{step}_{basename}_reconstructed", wav_reconstruction)
-            self.log_audio(f"Training/step_{step}_{basename}_synthesized", wav_prediction)
+            self.log_figure(
+                f"Training/step_{step}_{basename}", fig
+            )
+            self.log_audio(
+                f"Training/step_{step}_{basename}_reconstructed", wav_reconstruction
+            )
+            self.log_audio(
+                f"Training/step_{step}_{basename}_synthesized", wav_prediction
+            )
 
+        # Log message to log.txt and print to stdout
         if (self.global_step+1) % self.trainer.log_every_n_steps == 0:
             message = f"Step {self.global_step+1}/{self.trainer.max_steps}, "
-            tqdm.write(message + self.loss2str(loss))
+            message += self.loss2str(loss)
+            self.log_text(message)
 
-            self.logger[0].log_metrics(self.loss2dict(loss), self.global_step+1)
-
-        total_loss = loss[0]
-        self.log('train_loss', total_loss)
-        return total_loss
+        # Log metrics to CometLogger
+        comet_log_dict = {f"train_{k}":v for k,v in self.loss2dict(loss).items()}
+        self.log_dict(comet_log_dict, sync_dist=True)
+        return loss[0]
 
     def validation_step(self, batch, batch_nb):
         """Need to overwrite PL validation_step to do validation.
@@ -282,53 +288,28 @@ class System(pl.LightningModule):
         """Training dataloader"""
         sampler = RandomSampler(self.train_dataset)
         batch_size = self.train_config["optimizer"]["batch_size"]
-        if self.group_dataloader:
-            group_size = 4
-            batch_sampler = GroupBatchSampler(sampler, group_size, batch_size, drop_last=True, sort=True)
-            ddp_batch_sampler = DistributedBatchSampler(batch_sampler)
-            self.train_loader = DataLoader(
-                self.train_dataset,
-                batch_sampler=ddp_batch_sampler, 
-                collate_fn=get_single_collate(False),
-                num_workers=8,
-            )
-        else:
-            # batch_sampler = BatchSampler(sampler, batch_size, drop_last=True)
-            self.train_loader = DataLoader(
-                self.train_dataset,
-                # batch_sampler=batch_sampler, 
-                shuffle=True,
-                batch_size=batch_size,
-                drop_last=True,
-                collate_fn=get_single_collate(False),
-                num_workers=8,
-            )
+        self.train_loader = DataLoader(
+            self.train_dataset,
+            shuffle=True,
+            batch_size=batch_size,
+            drop_last=True,
+            collate_fn=get_single_collate(False),
+            num_workers=8,
+        )
         return self.train_loader
 
     def val_dataloader(self):
         """Validation dataloader"""
         sampler = SequentialSampler(self.val_dataset)
         batch_size = self.train_config["optimizer"]["batch_size"]
-        if self.group_dataloader:
-            group_size = 4
-            batch_sampler = GroupBatchSampler(sampler, group_size, batch_size, drop_last=False, sort=False)
-            ddp_batch_sampler = DistributedBatchSampler(batch_sampler)
-            self.val_loader = DataLoader(
-                self.val_dataset,
-                batch_sampler=ddp_batch_sampler, 
-                collate_fn=get_single_collate(False),
-                num_workers=8,
-            )
-        else:
-            # batch_sampler = BatchSampler(sampler, batch_size, drop_last=False)
-            self.val_loader = DataLoader(
-                self.val_dataset,
-                shuffle=False,
-                batch_size=batch_size,
-                drop_last=False,
-                collate_fn=get_single_collate(False),
-                num_workers=8,
-            )
+        self.val_loader = DataLoader(
+            self.val_dataset,
+            shuffle=False,
+            batch_size=batch_size,
+            drop_last=False,
+            collate_fn=get_single_collate(False),
+            num_workers=8,
+        )
         return self.val_loader
 
     def on_save_checkpoint(self, checkpoint):

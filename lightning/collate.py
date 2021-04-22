@@ -79,6 +79,30 @@ def get_meta_collate(shots, queries, sort=True):
     return collate_fn
 
 
+def get_multi_collate(shots, queries, sort=True):
+    """ data: N * (K + K)"""
+    batch_size = shots + queries
+    def collate_fn(data):
+        data_size = len(data)
+        assert data_size % batch_size == 0, "Assum batch_size = ways * (shots + queries)"
+        assert data_size // batch_size > 0, "Assum batch_size = ways * (shots + queries)"
+
+        if sort:
+            len_arr = np.array([d["text"].shape[0] for d in data])
+            idx_arr = np.argsort(-len_arr)
+        else:
+            idx_arr = np.arange(data_size)
+
+        idx_arr = idx_arr.reshape((-1, batch_size))
+
+        output = list()
+        for idx in idx_arr:
+            output.append(reprocess(data, idx))
+
+        return output
+    return collate_fn
+
+
 def get_single_collate(sort=True):
     def collate_fn(data):
         data_size = len(data)
