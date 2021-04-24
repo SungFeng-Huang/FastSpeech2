@@ -146,7 +146,8 @@ def main(args, configs):
         deterministic=True,
         log_every_n_steps=log_step,
         # val_check_interval=val_step,
-        profiler=profiler,
+        # profiler=profiler,
+        profiler='simple',
     )
     trainer.fit(system)
 

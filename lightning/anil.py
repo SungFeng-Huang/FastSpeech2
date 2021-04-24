@@ -132,7 +132,7 @@ class ANILSystem(BaselineSystem):
         return super().validation_step(batch, batch_idx)
 
     def validation_epoch_end(self, val_outputs=None):
-        super().validation_step(val_outputs)
+        super().validation_epoch_end(val_outputs)
 
     def val_dataloader(self):
         return super().val_dataloader()
