@@ -68,6 +68,7 @@ class System(pl.LightningModule):
         loss_func=None,
         train_dataset=None,
         val_dataset=None,
+        test_dataset=None,
         scheduler=None,
         configs=None,
         vocoder=None,
@@ -90,6 +91,7 @@ class System(pl.LightningModule):
 
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
 
         self.vocoder = LightningMelGAN(vocoder)
         self.vocoder.freeze()
@@ -375,41 +377,44 @@ class System(pl.LightningModule):
         train = self.trainer.training
         step = self.global_step+1
         sample_rate = self.preprocess_config["preprocessing"]["audio"]["sampling_rate"]
-        if isinstance(self.logger[0], pl.loggers.CometLogger):
-            stage, basename = tag.split('/', 1)
-            basename = basename.split('_')
-            idx = '_'.join(basename[2:-1])
-            if metadata is None:
-                metadata = {'stage': stage}
+        stage, basename = tag.split('/', 1)
+        os.makedirs(os.path.join(self.log_dir, "audio", stage), exist_ok=True)
+        wavfile.write(os.path.join(self.log_dir, "audio", f"{tag}.wav"), sample_rate, audio)
+        if hasattr(self, 'logger'):
+            if isinstance(self.logger[0], pl.loggers.CometLogger):
+                basename = basename.split('_')
+                idx = '_'.join(basename[2:-1])
+                if metadata is None:
+                    metadata = {'stage': stage}
+                else:
+                    metadata = metadata.copy()
+                audio_type = basename[-1]
+                metadata.update({'type': audio_type, 'id': idx})
+                file_name = f"{idx}_{audio_type}.wav"
+
+                self.logger[0].experiment.log_audio(
+                    audio_data=audio / max(abs(audio)),
+                    sample_rate=sample_rate,
+                    file_name=file_name,
+                    step=step,
+                    metadata=metadata,
+                )
+            elif isinstance(self.logger[int(not train)], pl.loggers.TensorBoardLogger):
+                self.logger[int(not train)].experiment.add_audio(
+                    tag=tag,
+                    snd_tensor=audio / max(abs(audio)),
+                    global_step=step,
+                    sample_rate=sample_rate,
+                )
             else:
-                metadata = metadata.copy()
-            audio_type = basename[-1]
-            metadata.update({'type': audio_type, 'id': idx})
-            file_name = f"{idx}_{audio_type}_{step}.wav"
-
-            os.makedirs(os.path.join(self.log_dir, "audio", stage), exist_ok=True)
-            wavfile.write(os.path.join(self.log_dir, "audio", f"{tag}.wav"), sample_rate, audio)
-
-            self.logger[0].experiment.log_audio(
-                audio_data=audio / max(abs(audio)),
-                sample_rate=sample_rate,
-                file_name=file_name,
-                step=step,
-                metadata=metadata,
-            )
-        elif isinstance(self.logger[int(not train)], pl.loggers.TensorBoardLogger):
-            self.logger[int(not train)].experiment.add_audio(
-                tag=tag,
-                snd_tensor=audio / max(abs(audio)),
-                global_step=step,
-                sample_rate=sample_rate,
-            )
-        else:
-            self.print("Failed to log audio: not finding correct logger type")
+                self.print("Failed to log audio: not finding correct logger type")
 
     def log_figure(self, tag, figure):
         train = self.trainer.training
         step = self.global_step+1
+        stage, basename = tag.split('/', 1)
+        # os.makedirs(os.path.join(self.log_dir, "figure", stage), exist_ok=True)
+        # wavfile.write(os.path.join(self.log_dir, "figure", f"{tag}.png"), sample_rate, audio)
         if isinstance(self.logger[0], pl.loggers.CometLogger):
             self.logger[0].experiment.log_figure(
                 figure_name=tag,

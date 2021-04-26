@@ -31,11 +31,12 @@ class ANILSystem(BaselineSystem):
         loss_func=None,
         train_dataset=None,
         val_dataset=None,
+        test_dataset=None,
         scheduler=None,
         configs=None,
         vocoder=None,
     ):
-        super().__init__(model, optimizer, loss_func, train_dataset, val_dataset, scheduler, configs, vocoder)
+        super().__init__(model, optimizer, loss_func, train_dataset, val_dataset, test_dataset, scheduler, configs, vocoder)
 
         self.train_ways     = self.train_config["meta"]["ways"]
         self.train_shots    = self.train_config["meta"]["shots"]
