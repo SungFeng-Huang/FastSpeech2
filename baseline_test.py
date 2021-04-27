@@ -17,7 +17,7 @@ from utils.model import get_model, get_vocoder, get_param_num
 from utils.tools import to_device, log, synth_one_sample
 from model import FastSpeech2Loss, FastSpeech2
 from dataset import Dataset
-from lightning.anil import ANILSystem
+from lightning.baseline import BaselineSystem
 from lightning.scheduler import get_scheduler
 from lightning.optimizer import get_optimizer
 from lightning.callbacks import GlobalProgressBar
@@ -59,7 +59,7 @@ def main(args, configs):
     if args.exp_key is not None:
         resume_ckpt = f'./output/ckpt/LibriTTS/meta-tts/{args.exp_key}/checkpoints/{args.ckpt_file}' #NOTE
 
-    system = ANILSystem.load_from_checkpoint(
+    system = BaselineSystem.load_from_checkpoint(
         resume_ckpt,
         strict=True,
         model=model,
@@ -80,10 +80,10 @@ def main(args, configs):
     # Init logger
     for p in train_config["path"].values():
         os.makedirs(p, exist_ok=True)
-    # train_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_train")
-    # val_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_val")
+    # train_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "baseline_train")
+    # val_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "baseline_val")
     comet_logger = pl.loggers.CometLogger(
-        save_dir=os.path.join(train_config["path"]["log_path"], "meta"),
+        save_dir=os.path.join(train_config["path"]["log_path"], "baseline"),
         experiment_key=args.exp_key,
         log_code=True,
         log_graph=True,
@@ -123,7 +123,7 @@ def main(args, configs):
         save_last=True,
     )
     callbacks.append(checkpoint)
-
+    
     # outer_bar = tqdm(total=total_step, desc="Training", position=0)
     # outer_bar.n = args.restore_step
     # outer_bar.update()

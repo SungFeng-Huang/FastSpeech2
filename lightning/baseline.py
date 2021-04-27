@@ -82,7 +82,7 @@ class BaselineSystem(System):
                 learner, *(sup_batch[2:]), output=sup_enc_output, src_masks=sup_src_masks
             )
             train_error = self.loss_func(sup_batch, preds)
-            learner.adapt(train_error[0], allow_unused=False, allow_nograd=True)
+            learner.adapt(train_error[0], first_order=(not self.trainer.training), allow_unused=False, allow_nograd=True)
         return learner
 
     def meta_learn(self, batch, batch_idx, ways, shots, queries):
@@ -156,6 +156,7 @@ class BaselineSystem(System):
     @torch.enable_grad()
     def test_step(self, batch, batch_idx):
         ways, shots, queries = self.test_ways, self.test_shots, self.test_queries
+        test_adaptation_steps = self.test_adaptation_steps
         assert len(batch) == 1, "meta_batch_per_gpu"
         assert len(batch[0]) == 2, "sup + qry"
         assert len(batch[0][0]) == 1, "n_batch == 1"
@@ -208,36 +209,40 @@ class BaselineSystem(System):
         )
 
         # Adapt
-        learner = self.adapt(batch, self.adaptation_steps)
+        assert test_adaptation_steps % self.adaptation_steps == 0
+        learner = None
+        for ft_step in range(self.adaptation_steps, test_adaptation_steps+1, self.adaptation_steps):
+            learner = self.adapt(batch, self.adaptation_steps, learner=learner)
 
-        # Evaluating the adapted model
-        predictions = self.forward_learner(
-            learner, *(qry_batch[2:]),
-            output=qry_enc_output, src_masks=qry_src_masks
-        )
-        valid_error = self.loss_func(qry_batch, predictions)
+            # Evaluating the adapted model
+            predictions = self.forward_learner(
+                learner, *(qry_batch[2:]),
+                output=qry_enc_output, src_masks=qry_src_masks
+            )
+            valid_error = self.loss_func(qry_batch, predictions)
 
-        with open(os.path.join(self.result_dir, "test_csv", f"step_{self.test_global_step}",
-                               f"{self.test_SQids2vid[SQids]}.csv"), 'a') as f:
-            f.write(f"{self.adaptation_steps}")
-            for loss in valid_error:
-                f.write(f", {loss.item()}")
-            f.write("\n")
+            with open(os.path.join(self.result_dir, "test_csv", f"step_{self.test_global_step}",
+                                   f"{self.test_SQids2vid[SQids]}.csv"), 'a') as f:
+                f.write(f"{ft_step}")
+                for loss in valid_error:
+                    f.write(f", {loss.item()}")
+                f.write("\n")
 
-        # synth_samples & save & log
-        predictions = self.forward_learner(
-            learner, *(qry_batch[2:6]),
-            output=qry_enc_output, src_masks=qry_src_masks
-        )
-        self.synth_samples(
-            qry_batch, predictions,
-            tag=f"Testing/{self.test_SQids2vid[SQids]}",
-            name=f"step_{self.test_global_step}-FTstep_{self.adaptation_steps}",
-            log_dir=self.result_dir,
-        )
+            if ft_step in [5, 10, 20, 50, 100]:
+                # synth_samples & save & log
+                predictions = self.forward_learner(
+                    learner, *(qry_batch[2:6]),
+                    output=qry_enc_output, src_masks=qry_src_masks
+                )
+                self.synth_samples(
+                    qry_batch, predictions,
+                    tag=f"Testing/{self.test_SQids2vid[SQids]}",
+                    name=f"step_{self.test_global_step}-FTstep_{ft_step}",
+                    log_dir=self.result_dir,
+                )
 
         # Log loss for each sample to csv files
-        self.log_test_csv(sup_ids, qry_ids, valid_error, log_dir=self.result_dir)
+        # self.log_test_csv(sup_ids, qry_ids, valid_error, log_dir=self.result_dir)
 
         # Log metrics to CometLogger
         # tblog_dict = self.loss2dict(val_loss)
@@ -314,7 +319,7 @@ class BaselineSystem(System):
 
         # 1-way-5-shots tasks for each speaker
         test_tasks = []
-        task_per_speaker = 40
+        task_per_speaker = 16
         for label, indices in meta_dataset.labels_to_indices.items():
             if len(indices) >= self.test_shots+self.test_queries:
                 transforms = [
