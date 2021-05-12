@@ -24,19 +24,8 @@ class ANILSystem(BaselineSystem):
     """A PyTorch Lightning module for ANIL for FastSpeech2.
     """
 
-    def __init__(
-        self,
-        model=None,
-        optimizer=None,
-        loss_func=None,
-        train_dataset=None,
-        val_dataset=None,
-        test_dataset=None,
-        scheduler=None,
-        configs=None,
-        vocoder=None,
-    ):
-        super().__init__(model, optimizer, loss_func, train_dataset, val_dataset, test_dataset, scheduler, configs, vocoder)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
         self.train_ways     = self.train_config["meta"]["ways"]
         self.train_shots    = self.train_config["meta"]["shots"]
@@ -44,11 +33,10 @@ class ANILSystem(BaselineSystem):
         assert self.train_ways == self.test_ways, \
             "For ANIL, train_ways should be equal to test_ways."
 
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx):
+        self._on_batch_start(batch, batch_idx, dataloader_idx)
+
     def training_step(self, batch, batch_idx):
-        assert len(batch) == 1, "meta_batch_per_gpu"
-        assert len(batch[0]) == 2, "sup + qry"
-        assert len(batch[0][0]) == 1, "n_batch == 1"
-        assert len(batch[0][0][0]) == 12, "data with 12 elements"
 
         train_loss, predictions = self.meta_learn(
             batch, batch_idx, self.train_ways, self.train_shots, self.train_queries
@@ -66,18 +54,15 @@ class ANILSystem(BaselineSystem):
             )
             step = self.global_step+1
             self.log_figure(
-                f"Training/step_{step}_{basename}",
-                fig
+                f"Training/step_{step}_{basename}", fig
             )
             self.log_audio(
                 f"Training/step_{step}_{basename}_reconstructed",
-                wav_reconstruction,
-                metadata=metadata
+                wav_reconstruction, metadata=metadata
             )
             self.log_audio(
                 f"Training/step_{step}_{basename}_synthesized",
-                wav_prediction,
-                metadata=metadata
+                wav_prediction, metadata=metadata
             )
 
         # Log message to log.txt and print to stdout
@@ -92,36 +77,19 @@ class ANILSystem(BaselineSystem):
         return train_loss[0]
 
     def train_dataloader(self):
-        # Make meta-dataset, to apply 1-way-5-shots tasks
-        id2lb = {k:v for k,v in enumerate(self.train_dataset.speaker)}
-        meta_dataset = l2l.data.MetaDataset(self.train_dataset, indices_to_labels=id2lb)
-
-        # 1-way-5-shots transforms
-        transforms = [
-            l2l.data.transforms.FusedNWaysKShots(
-                meta_dataset, n=self.train_ways, k=self.train_shots+self.train_queries,
-                replacement=True
-            ),
-            l2l.data.transforms.LoadData(meta_dataset),
-        ]
-
-        # 1-way-5-shot task dataset
-        tasks = l2l.data.TaskDataset(
-            meta_dataset,
-            task_transforms=transforms,
-            task_collate=get_meta_collate(self.train_shots, self.train_queries, False),
-        )
-
         # Epochify task dataset, for periodic validation
         meta_batch_size = self.train_config["meta"]["meta_batch_size"]
         val_step = self.train_config["step"]["val_step"]
-        episodic_tasks = EpisodicBatcher(
-            tasks, epoch_length=meta_batch_size*val_step,
-        )
+        epoch_length = meta_batch_size*val_step
+
+        train_task_dataset = self._few_shot_task_dataset(
+            self.train_dataset, self.train_ways, self.train_shots, self.train_queries,
+            task_per_speaker=-1, epoch_length=epoch_length
+        ).train_dataloader()
 
         # DataLoader, batch_size = batch size on each gpu
         self.train_loader = DataLoader(
-            episodic_tasks.train_dataloader(),
+            train_task_dataset,
             batch_size=1,
             shuffle=True,
             collate_fn=lambda batch: batch,
@@ -143,4 +111,3 @@ class ANILSystem(BaselineSystem):
 
     def on_load_checkpoint(self, checkpoint):
         super().on_load_checkpoint(checkpoint)
-
