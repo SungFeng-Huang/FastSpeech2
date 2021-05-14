@@ -17,7 +17,7 @@ from utils.model import get_model, get_vocoder, get_param_num
 from utils.tools import to_device, log, synth_one_sample
 from model import FastSpeech2Loss, FastSpeech2
 from dataset import Dataset
-from lightning.anil import ANILSystem
+# from lightning.anil import ANILSystem
 from lightning.scheduler import get_scheduler
 from lightning.optimizer import get_optimizer
 from lightning.callbacks import GlobalProgressBar
@@ -33,55 +33,9 @@ def main(args, configs):
 
     preprocess_config, model_config, train_config = configs
 
-    # Get dataset
-    train_dataset = Dataset(
-        f"{preprocess_config['meta']['train']}.txt", preprocess_config, train_config, sort=True, drop_last=True
-    )
-    val_dataset = Dataset(
-        f"{preprocess_config['meta']['val']}.txt", preprocess_config, train_config, sort=False, drop_last=False
-    )
-    test_dataset = Dataset(
-        f"{preprocess_config['meta']['test']}.txt", preprocess_config, train_config, sort=False, drop_last=False
-    )
-
-    # Prepare model
-    model = FastSpeech2(preprocess_config, model_config)
-    optimizer = get_optimizer(model, model_config, train_config)
-    scheduler = get_scheduler(optimizer, train_config)
-    num_param = get_param_num(model)
-    Loss = FastSpeech2Loss(preprocess_config, model_config)
-    print("Number of FastSpeech2 Parameters:", num_param)
-
-    # Load vocoder
-    vocoder = get_vocoder(model_config, device)
-
-    resume_ckpt = None
-    if args.exp_key is not None:
-        resume_ckpt = f'./output/ckpt/LibriTTS/meta-tts/{args.exp_key}/checkpoints/{args.ckpt_file}' #NOTE
-
-    system = ANILSystem.load_from_checkpoint(
-        resume_ckpt,
-        strict=True,
-        model=model,
-        optimizer=optimizer,
-        loss_func=Loss,
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-        test_dataset=test_dataset,
-        scheduler=scheduler,
-        configs=configs,
-        vocoder=vocoder,
-    )
-    # system.global_step = torch.load(resume_ckpt, map_location='cpu')['global_step']
-    system.result_dir = os.path.join(train_config['path']['result_path'], args.exp_key)
-    os.makedirs(os.path.join(train_config['path']['result_path'], args.exp_key), exist_ok=True)
-    system.test_adaptation_steps = args.test_adaptation_steps
-
     # Init logger
     for p in train_config["path"].values():
         os.makedirs(p, exist_ok=True)
-    # train_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_train")
-    # val_logger = pl.loggers.TensorBoardLogger(train_config["path"]["log_path"], "meta_val")
     comet_logger = pl.loggers.CometLogger(
         save_dir=os.path.join(train_config["path"]["log_path"], "meta"),
         experiment_key=args.exp_key,
@@ -102,6 +56,83 @@ def main(args, configs):
     })
     loggers = [comet_logger]
     profiler = AdvancedProfiler(train_config["path"]["log_path"], 'profile.log')
+
+    # Get dataset
+    # train_dataset = Dataset(
+        # f"{preprocess_config['meta']['train']}.txt", preprocess_config, train_config, sort=True, drop_last=True
+    # )
+    # val_dataset = Dataset(
+        # f"{preprocess_config['meta']['val']}.txt", preprocess_config, train_config, sort=False, drop_last=False
+    # )
+    train_dataset = None
+    val_dataset = None
+    test_dataset = Dataset(
+        f"{preprocess_config['meta']['test']}.txt", preprocess_config, train_config, sort=False, drop_last=False
+    )
+
+    # Prepare model
+    model = FastSpeech2(preprocess_config, model_config)
+    optimizer = get_optimizer(model, model_config, train_config)
+    scheduler = get_scheduler(optimizer, train_config)
+    num_param = get_param_num(model)
+    Loss = FastSpeech2Loss(preprocess_config, model_config)
+    print("Number of FastSpeech2 Parameters:", num_param)
+
+    # Load vocoder
+    vocoder = get_vocoder(model_config, device)
+
+    resume_ckpt = f'./output/ckpt/LibriTTS/meta-tts/{args.exp_key}/checkpoints/{args.ckpt_file}' #NOTE
+    log_dir = os.path.join(comet_logger._save_dir, comet_logger.version)
+    result_dir = os.path.join(train_config['path']['result_path'], comet_logger.version)
+    if args.algorithm == 'base':
+        from lightning.baseline import BaselineSystem as System
+    if args.algorithm == 'meta':
+        from lightning.anil import ANILSystem as System
+    if args.algorithm == 'base_emb_1':
+        from lightning.base_emb_1 import BaselineEmb1System as System
+    if args.algorithm == 'meta_emb_1':
+        from lightning.anil_emb_1 import ANILEmb1System as System
+    spk_weight = model.speaker_emb.weight.clone().detach()
+    mel_linear = model.mel_linear.weight.clone().detach()
+    try:
+        system = System.load_from_checkpoint(
+            resume_ckpt,
+            strict=True,
+            model=model,
+            optimizer=optimizer,
+            loss_func=Loss,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            test_dataset=test_dataset,
+            scheduler=scheduler,
+            configs=configs,
+            vocoder=vocoder,
+            log_dir=log_dir,
+            result_dir=result_dir,
+        )
+    except Exception as e:
+        print(e)
+        system = System.load_from_checkpoint(
+            resume_ckpt,
+            strict=False,
+            model=model,
+            optimizer=optimizer,
+            loss_func=Loss,
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            test_dataset=test_dataset,
+            scheduler=scheduler,
+            configs=configs,
+            vocoder=vocoder,
+            log_dir=log_dir,
+            result_dir=result_dir,
+        )
+        print("Before loading (spk emb):", spk_weight)
+        print("After loading (spk emb):", system.model.speaker_emb.weight)
+        print("Learner (spk emb):", system.learner.module['speaker_emb'].weight)
+        print("Before loading (mel linear):", mel_linear)
+        print("After loading (mel linear):", system.model.mel_linear.weight)
+        print("Learner (mel linear):", system.learner.module['mel_linear'].weight)
 
     # Training
     # step = args.restore_step + 1
@@ -127,7 +158,7 @@ def main(args, configs):
     # outer_bar = tqdm(total=total_step, desc="Training", position=0)
     # outer_bar.n = args.restore_step
     # outer_bar.update()
-    outer_bar = GlobalProgressBar(process_position=0)
+    outer_bar = GlobalProgressBar(process_position=1)
     inner_bar = ProgressBar(process_position=1)
     lr_monitor = LearningRateMonitor()
     gpu_monitor = GPUStatsMonitor(memory_utilization=True, gpu_utilization=True, intra_step_time=True, inter_step_time=True)
@@ -198,9 +229,12 @@ if __name__ == "__main__":
         "-d", "--dev", action="store_true", help="dev mode"
     )
     parser.add_argument(
-        "-a", "--test_adaptation_steps", type=int, help="test adaptation steps",
-        default=None,
+        "-a", "--algorithm", type=str, help="algorithm (base, meta, base_emb_1)"
     )
+    # parser.add_argument(
+        # "-a", "--test_adaptation_steps", type=int, help="test adaptation steps",
+        # default=None,
+    # )
     args = parser.parse_args()
 
     # Read Config
@@ -211,6 +245,7 @@ if __name__ == "__main__":
     train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
     train_config["meta"]["meta_batch_size"] = args.meta_batch_size
     if args.dev:
+        train_config["step"]["total_step"] = 300
         train_config["step"]["synth_step"] = 100
         train_config["step"]["val_step"] = 100
         train_config["step"]["save_step"] = 100

@@ -236,11 +236,30 @@ class System(pl.LightningModule):
         checkpoint["log_dir"] = self.log_dir
         return checkpoint
 
-    def on_load_checkpoint(self, checkpoint):
+    # def on_load_checkpoint(self, checkpoint):
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
         self.preprocess_config = checkpoint["preprocess_config"]
         self.train_config = checkpoint["train_config"]
         self.model_config = checkpoint["model_config"]
         self.log_dir = checkpoint["log_dir"]
+        state_dict = checkpoint["state_dict"]
+        model_state_dict = self.state_dict()
+        is_changed = False
+        for k in state_dict:
+            if k in model_state_dict:
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                    state_dict[k] = model_state_dict[k]
+                    is_changed = True
+            else:
+                print(f"Dropping parameter {k}")
+                is_changed = True
+
+        if is_changed:
+            checkpoint.pop("optimizer_states", None)
 
     @rank_zero_only
     def synth_one_sample(self, targets, predictions):
