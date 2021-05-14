@@ -236,6 +236,7 @@ class BaselineSystem(FewShotSystem):
             train_shots     = self.train_config["meta"]["shots"]
             train_queries   = self.train_config["meta"]["queries"]
 
+            assert torch.cuda.device_count() == 1
             batch_size = train_ways * (train_shots + train_queries) * meta_batch_size
             val_step = self.train_config["step"]["val_step"]
             self.train_dataset = EpisodicInfiniteWrapper(self.train_dataset, val_step*batch_size)
@@ -261,8 +262,9 @@ class BaselineSystem(FewShotSystem):
 
         # Fix random seed for validation set. Don't use pl.seed_everything(43,
         # True) if don't want to affect training seed. Use my seed_all instead.
-        with seed_all(43):
-            self.val_SQids2Tid = self.prefetch_tasks(val_task_dataset, 'val', self.log_dir)
+        pl.seed_everything(43, True)
+        # with seed_all(43):
+        self.val_SQids2Tid = self.prefetch_tasks(val_task_dataset, 'val', self.log_dir)
 
         # DataLoader
         self.val_loader = DataLoader(

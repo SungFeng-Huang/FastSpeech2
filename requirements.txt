@@ -1,3 +1,7 @@
+comet-ml
+pytorch-lightning
+learn2learn
+
 g2p-en == 2.1.0
 inflect == 4.1.0
 librosa == 0.7.2
