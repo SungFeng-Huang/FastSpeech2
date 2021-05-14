@@ -1,12 +1,48 @@
 #!/usr/bin/env python3
 
+import os
+import json
 import torch
+import numpy as np
+import pytorch_lightning as pl
+import learn2learn as l2l
+from scipy.io import wavfile
+from tqdm import tqdm
+
+from torch.utils.data import DataLoader
+from pytorch_lightning.loggers.base import merge_dicts
+from learn2learn.algorithms.lightning import LightningMAML
+from learn2learn.utils.lightning import EpisodicBatcher
 
 from model import FastSpeech2Loss, FastSpeech2
+from utils.tools import get_mask_from_lengths, expand, plot_mel
 from lightning.baseline import BaselineSystem
+from lightning.collate import get_meta_collate, get_multi_collate, get_single_collate
+from lightning.utils import seed_all, EpisodicInfiniteWrapper
 
 
-class BaselineEmb1System(BaselineSystem):
+class BaselineEmbSystem(BaselineSystem):
+    """A PyTorch Lightning module for ANIL for FastSpeech2.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # self.encoder = self.model.encoder
+        del self.learner
+
+        self.decoder = self.model.decoder
+        self.mel_linear = self.model.mel_linear
+        self.postnet = self.model.postnet
+        self.variance_adaptor = self.model.variance_adaptor
+        self.learner = torch.nn.ModuleDict({
+            'speaker_emb'       : self.model.speaker_emb,
+        })
+
+        self.learner = l2l.algorithms.MAML(self.learner, lr=self.adaptation_lr)
+
+
+class BaselineEmb1System(BaselineEmbSystem):
     """A PyTorch Lightning module for ANIL for FastSpeech2.
     1 embedding for all speakers.
     """

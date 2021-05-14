@@ -83,12 +83,24 @@ def main(args, configs):
     result_dir = os.path.join(train_config['path']['result_path'], comet_logger.version)
     if args.algorithm == 'base':
         from lightning.baseline import BaselineSystem as System
+    if args.algorithm == 'base_emb_1':
+        from lightning.baseline import BaselineEmb1VADecSystem as System
     if args.algorithm == 'meta':
         from lightning.anil import ANILSystem as System
-    if args.algorithm == 'base_emb_1':
-        from lightning.base_emb_1 import BaselineEmb1System as System
     if args.algorithm == 'meta_emb_1':
-        from lightning.anil_emb_1 import ANILEmb1System as System
+        from lightning.anil import ANILEmb1VADecSystem as System
+    if args.algorithm in 'meta_emb_va':
+        from lightning.anil_emb_va import ANILEmbVASystem as System
+    if args.algorithm in 'meta_emb1_va':
+        from lightning.anil_emb_va import ANILEmb1VASystem as System
+    if args.algorithm in 'meta_emb_d':
+        from lightning.anil_emb_d import ANILEmbDecSystem as System
+    if args.algorithm in 'meta_emb1_d':
+        from lightning.anil_emb_d import ANILEmb1DecSystem as System
+    if args.algorithm in 'meta_emb':
+        from lightning.anil_emb import ANILEmbSystem as System
+    if args.algorithm in 'meta_emb1':
+        from lightning.anil_emb import ANILEmb1System as System
     system = System(
         model=model,
         optimizer=optimizer,
