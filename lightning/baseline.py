@@ -50,8 +50,8 @@ class BaselineSystem(FewShotSystem):
             'speaker_emb'       : self.model.speaker_emb,
         })
 
-        if self.data_parallel and torch.cuda.device_count() > 1:
-            self.encoder = torch.nn.DataParallel(self.encoder)
+        # if self.data_parallel and torch.cuda.device_count() > 1:
+            # self.encoder = torch.nn.DataParallel(self.encoder)
         self.learner = l2l.algorithms.MAML(self.learner, lr=self.adaptation_lr)
 
     @torch.enable_grad()
@@ -61,12 +61,11 @@ class BaselineSystem(FewShotSystem):
             learner.train()
 
         sup_batch = batch[0][0][0]
-        sup_enc_output, sup_src_masks = self.forward_encoder(*(sup_batch[2:]))
 
         # Adapt the classifier
         for step in range(adaptation_steps):
             preds = self.forward_learner(
-                learner, *(sup_batch[2:]), output=sup_enc_output, src_masks=sup_src_masks
+                learner, *(sup_batch[2:])
             )
             train_error = self.loss_func(sup_batch, preds)
             learner.adapt(train_error[0], first_order=(not self.trainer.training), allow_unused=False, allow_nograd=True)
@@ -78,9 +77,8 @@ class BaselineSystem(FewShotSystem):
 
         # Evaluating the adapted model
         qry_batch = batch[0][1][0]
-        qry_enc_output, qry_src_masks = self.forward_encoder(*(qry_batch[2:]))
         predictions = self.forward_learner(
-            learner, *(qry_batch[2:]), output=qry_enc_output, src_masks=qry_src_masks
+            learner, *(qry_batch[2:])
         )
         valid_error = self.loss_func(qry_batch, predictions)
         return valid_error, predictions
@@ -160,10 +158,8 @@ class BaselineSystem(FewShotSystem):
         SQids = f"{'-'.join(sup_ids)}.{'-'.join(qry_ids)}"
 
         # Evaluating the initial model
-        qry_enc_output, qry_src_masks = self.forward_encoder(*(qry_batch[2:6]))
         predictions = self.forward_learner(
             self.learner, *(qry_batch[2:]),
-            output=qry_enc_output, src_masks=qry_src_masks
         )
         valid_error = self.loss_func(qry_batch, predictions)
 
@@ -187,7 +183,6 @@ class BaselineSystem(FewShotSystem):
         # synth_samples & save & log
         predictions = self.forward_learner(
             self.learner, *(qry_batch[2:6]),
-            output=qry_enc_output, src_masks=qry_src_masks
         )
         self.synth_samples(
             qry_batch, predictions,
@@ -205,7 +200,6 @@ class BaselineSystem(FewShotSystem):
             # Evaluating the adapted model
             predictions = self.forward_learner(
                 learner, *(qry_batch[2:]),
-                output=qry_enc_output, src_masks=qry_src_masks
             )
             valid_error = self.loss_func(qry_batch, predictions)
 
@@ -220,7 +214,6 @@ class BaselineSystem(FewShotSystem):
                 # synth_samples & save & log
                 predictions = self.forward_learner(
                     learner, *(qry_batch[2:6]),
-                    output=qry_enc_output, src_masks=qry_src_masks
                 )
                 self.synth_samples(
                     qry_batch, predictions,
@@ -315,16 +308,6 @@ class BaselineSystem(FewShotSystem):
         # self.val_SQids2Tid = checkpoint["val_SQids2Tid"]
         self.test_global_step = checkpoint["global_step"]
 
-    def forward_encoder(self, *batch):
-        texts = batch[1]
-        src_lens = batch[2]
-        max_src_len = batch[3]
-        src_masks = get_mask_from_lengths(src_lens, max_src_len)
-
-        output = self.encoder(texts, src_masks)
-
-        return output, src_masks
-
     def forward_learner(
         self, learner,
         speakers, texts,
@@ -332,14 +315,33 @@ class BaselineSystem(FewShotSystem):
         mels=None, mel_lens=None, max_mel_len=None,
         p_targets=None, e_targets=None, d_targets=None,
         p_control=1.0, e_control=1.0, d_control=1.0,
-        output=None, src_masks=None,
     ):
+        encoder = self.model.encoder
+        variance_adaptor = self.model.variance_adaptor
+        decoder = self.model.decoder
+        mel_linear = self.model.mel_linear
+        postnet = self.model.postnet
+        if 'variance_adaptor' in learner.module:
+            variance_adaptor = learner.module['variance_adaptor']
+        if 'decoder' in learner.module:
+            decoder = learner.module['decoder']
+        if 'mel_linear' in learner.module:
+            mel_linear = learner.module['mel_linear']
+        if 'postnet' in learner.module:
+            postnet = learner.module['postnet']
+        if learner.module['speaker_emb'] is not None:
+            speaker_emb = learner.module['speaker_emb']
+
+        src_masks = get_mask_from_lengths(src_lens, max_src_len)
+
+        output = encoder(texts, src_masks)
+
         mel_masks = (
             get_mask_from_lengths(mel_lens, max_mel_len) if mel_lens is not None else None
         )
 
         if learner.module['speaker_emb'] is not None:
-            output = output + learner.module['speaker_emb'](speakers).unsqueeze(1).expand(
+            output = output + speaker_emb(speakers).unsqueeze(1).expand(
                 -1, max_src_len, -1
             )
 
@@ -347,24 +349,86 @@ class BaselineSystem(FewShotSystem):
             output,
             p_predictions, e_predictions, log_d_predictions, d_rounded,
             mel_lens, mel_masks,
-        ) = learner.module['variance_adaptor'](
+        ) = variance_adaptor(
             output,
             src_masks, mel_masks, max_mel_len,
             p_targets, e_targets, d_targets, p_control, e_control, d_control,
         )
 
         if learner.module['speaker_emb'] is not None:
-            output = output + learner.module['speaker_emb'](speakers).unsqueeze(1).expand(
+            output = output + speaker_emb(speakers).unsqueeze(1).expand(
                 -1, max(mel_lens), -1
             )
 
-        output, mel_masks = learner.module['decoder'](output, mel_masks)
-        output = learner.module['mel_linear'](output)
+        output, mel_masks = decoder(output, mel_masks)
+        output = mel_linear(output)
 
-        postnet_output = learner.module['postnet'](output) + output
+        postnet_output = postnet(output) + output
 
         return (
             output, postnet_output,
             p_predictions, e_predictions, log_d_predictions, d_rounded,
             src_masks, mel_masks, src_lens, mel_lens,
         )
+
+
+class BaselineEmb1VADecSystem(BaselineSystem):
+    """A PyTorch Lightning module for ANIL for FastSpeech2.
+    1 embedding for all speakers.
+    """
+
+    def __init__(
+        self,
+        model=None,
+        optimizer=None,
+        loss_func=None,
+        train_dataset=None,
+        val_dataset=None,
+        test_dataset=None,
+        scheduler=None,
+        configs=None,
+        vocoder=None,
+        log_dir=None,
+        result_dir=None,
+     ):
+        preprocess_config, model_config, train_config = configs
+
+        if model is None:
+            model = FastSpeech2(preprocess_config, model_config)
+        if loss_func is None:
+            loss_func = FastSpeech2Loss(preprocess_config, model_config)
+
+        if model_config["multi_speaker"]:
+            del model.speaker_emb
+            model.speaker_emb = torch.nn.Embedding(
+                1,
+                model_config["transformer"]["encoder_hidden"],
+            )
+        
+        del optimizer
+        del scheduler
+        optimizer = None
+        scheduler = None
+
+        super().__init__(
+            model, optimizer, loss_func,
+            train_dataset, val_dataset, test_dataset,
+            scheduler, configs, vocoder,
+            log_dir, result_dir
+        )
+
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx):
+        with torch.no_grad():
+            batch[2].zero_()
+
+    def on_validation_batch_start(self, batch, batch_idx, dataloader_idx):
+        self._on_batch_start(batch, batch_idx, dataloader_idx)
+        with torch.no_grad():
+            batch[0][0][0][2].zero_()
+            batch[0][1][0][2].zero_()
+
+    def on_test_batch_start(self, batch, batch_idx, dataloader_idx):
+        self._on_batch_start(batch, batch_idx, dataloader_idx)
+        with torch.no_grad():
+            batch[0][0][0][2].zero_()
+            batch[0][1][0][2].zero_()

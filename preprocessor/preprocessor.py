@@ -202,15 +202,27 @@ class Preprocessor:
         print("Computing statistic quantities ...")
         # Perform normalization if necessary
         if self.pitch_normalization:
-            pitch_mean = pitch_scaler.mean_[0]
-            pitch_std = pitch_scaler.scale_[0]
+            # Full set for testing
+            if self.val_size == 0 and os.path.exists(os.path.join(self.out_dir, "stats.json")):
+                stats = json.load(open(os.path.join(self.out_dir, "stats.json"), 'r'))
+                pitch_mean = stats['pitch'][2]
+                pitch_std = stats['pitch'][3]
+            else:
+                pitch_mean = pitch_scaler.mean_[0]
+                pitch_std = pitch_scaler.scale_[0]
         else:
             # A numerical trick to avoid normalization...
             pitch_mean = 0
             pitch_std = 1
         if self.energy_normalization:
-            energy_mean = energy_scaler.mean_[0]
-            energy_std = energy_scaler.scale_[0]
+            # Full set for testing
+            if self.val_size == 0 and os.path.exists(os.path.join(self.out_dir, "stats.json")):
+                stats = json.load(open(os.path.join(self.out_dir, "stats.json"), 'r'))
+                energy_mean = stats['energy'][2]
+                energy_std = stats['energy'][3]
+            else:
+                energy_mean = energy_scaler.mean_[0]
+                energy_std = energy_scaler.scale_[0]
         else:
             energy_mean = 0
             energy_std = 1
@@ -249,16 +261,21 @@ class Preprocessor:
             )
         )
 
-        random.shuffle(out)
-        out = [r for r in out if r is not None]
+        if self.val_size > 0:
+            random.shuffle(out)
+            out = [r for r in out if r is not None]
 
-        # Write metadata
-        with open(os.path.join(self.out_dir, "train.txt"), "w", encoding="utf-8") as f:
-            for m in out[self.val_size :]:
-                f.write(m + "\n")
-        with open(os.path.join(self.out_dir, "val.txt"), "w", encoding="utf-8") as f:
-            for m in out[: self.val_size]:
-                f.write(m + "\n")
+            # Write metadata
+            with open(os.path.join(self.out_dir, "train.txt"), "w", encoding="utf-8") as f:
+                for m in out[self.val_size :]:
+                    f.write(m + "\n")
+            with open(os.path.join(self.out_dir, "val.txt"), "w", encoding="utf-8") as f:
+                for m in out[: self.val_size]:
+                    f.write(m + "\n")
+        else:
+            with open(os.path.join(self.out_dir, "all.txt"), "w", encoding="utf-8") as f:
+                for m in out:
+                    f.write(m + "\n")
 
         return out
 

@@ -15,12 +15,12 @@ from learn2learn.utils.lightning import EpisodicBatcher
 
 from model import FastSpeech2Loss, FastSpeech2
 from utils.tools import get_mask_from_lengths
-from lightning.baseline import BaselineSystem
+from lightning.base_emb_va import BaselineEmbVASystem
 from lightning.collate import get_meta_collate
 from lightning.utils import seed_all
 
 
-class ANILSystem(BaselineSystem):
+class ANILEmbVASystem(BaselineEmbVASystem):
     """A PyTorch Lightning module for ANIL for FastSpeech2.
     """
 
@@ -113,7 +113,7 @@ class ANILSystem(BaselineSystem):
         super().on_load_checkpoint(checkpoint)
 
 
-class ANILEmb1VADecSystem(ANILSystem):
+class ANILEmb1VASystem(ANILEmbVASystem):
     """A PyTorch Lightning module for ANIL for FastSpeech2.
     """
 
