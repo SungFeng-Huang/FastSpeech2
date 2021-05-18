@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import pytorch_lightning as pl
 from pytorch_lightning.callbacks.progress import ProgressBar
 from pytorch_lightning.callbacks import LearningRateMonitor, GPUStatsMonitor, ModelCheckpoint
 from pytorch_lightning.profiler import AdvancedProfiler
@@ -22,6 +23,7 @@ from lightning.scheduler import get_scheduler
 from lightning.optimizer import get_optimizer
 from lightning.callbacks import GlobalProgressBar
 from lightning.collate import get_single_collate
+from lightning.utils import seed_all, EpisodicInfiniteWrapper
 
 from evaluate import evaluate
 
@@ -71,7 +73,8 @@ def main(args, configs):
     )
 
     # Prepare model
-    model = FastSpeech2(preprocess_config, model_config)
+    with seed_all(43):
+        model = FastSpeech2(preprocess_config, model_config)
     optimizer = get_optimizer(model, model_config, train_config)
     scheduler = get_scheduler(optimizer, train_config)
     num_param = get_param_num(model)
@@ -83,29 +86,39 @@ def main(args, configs):
 
     resume_ckpt = f'./output/ckpt/LibriTTS/meta-tts/{args.exp_key}/checkpoints/{args.ckpt_file}' #NOTE
     log_dir = os.path.join(comet_logger._save_dir, comet_logger.version)
-    result_dir = os.path.join(train_config['path']['result_path'], comet_logger.version)
-    if args.algorithm == 'base':
+    result_dir = os.path.join(train_config['path']['result_path'], comet_logger.version, args.algorithm)
+    if args.algorithm == 'base' or args.algorithm == 'base_emb_vad':
         from lightning.baseline import BaselineSystem as System
+    if args.algorithm == 'base_emb_va':
+        from lightning.base_emb_va import BaselineEmbVASystem as System
+    if args.algorithm == 'base_emb_d':
+        from lightning.base_emb_d import BaselineEmbDecSystem as System
+    if args.algorithm == 'base_emb':
+        from lightning.base_emb import BaselineEmbSystem as System
     if args.algorithm == 'base_emb1_vad':
         from lightning.baseline import BaselineEmb1VADecSystem as System
-    if args.algorithm == 'meta':
+    if args.algorithm == 'base_emb1_va':
+        from lightning.base_emb_va import BaselineEmb1VASystem as System
+    if args.algorithm == 'base_emb1_d':
+        from lightning.base_emb_d import BaselineEmb1DecSystem as System
+    if args.algorithm == 'base_emb1':
+        from lightning.base_emb import BaselineEmb1System as System
+    if args.algorithm == 'meta' or args.algorithm == 'meta_emb_vad':
         from lightning.anil import ANILSystem as System
-    if args.algorithm == 'meta_emb1_vad':
-        from lightning.anil import ANILEmb1VADecSystem as System
     if args.algorithm == 'meta_emb_va':
         from lightning.anil_emb_va import ANILEmbVASystem as System
-    if args.algorithm == 'meta_emb1_va':
-        from lightning.anil_emb_va import ANILEmb1VASystem as System
     if args.algorithm == 'meta_emb_d':
         from lightning.anil_emb_d import ANILEmbDecSystem as System
-    if args.algorithm == 'meta_emb1_d':
-        from lightning.anil_emb_d import ANILEmb1DecSystem as System
     if args.algorithm == 'meta_emb':
         from lightning.anil_emb import ANILEmbSystem as System
+    if args.algorithm == 'meta_emb1_vad':
+        from lightning.anil import ANILEmb1VADecSystem as System
+    if args.algorithm == 'meta_emb1_va':
+        from lightning.anil_emb_va import ANILEmb1VASystem as System
+    if args.algorithm == 'meta_emb1_d':
+        from lightning.anil_emb_d import ANILEmb1DecSystem as System
     if args.algorithm == 'meta_emb1':
         from lightning.anil_emb import ANILEmb1System as System
-    spk_weight = model.speaker_emb.weight.clone().detach()
-    mel_linear = model.mel_linear.weight.clone().detach()
     try:
         system = System.load_from_checkpoint(
             resume_ckpt,
@@ -123,7 +136,6 @@ def main(args, configs):
             result_dir=result_dir,
         )
     except Exception as e:
-        print(e)
         system = System.load_from_checkpoint(
             resume_ckpt,
             strict=False,
@@ -139,12 +151,6 @@ def main(args, configs):
             log_dir=log_dir,
             result_dir=result_dir,
         )
-        print("Before loading (spk emb):", spk_weight)
-        print("After loading (spk emb):", system.model.speaker_emb.weight)
-        print("Learner (spk emb):", system.learner.module['speaker_emb'].weight)
-        print("Before loading (mel linear):", mel_linear)
-        print("After loading (mel linear):", system.model.mel_linear.weight)
-        print("Learner (mel linear):", system.learner.module['mel_linear'].weight)
 
     # Training
     # step = args.restore_step + 1

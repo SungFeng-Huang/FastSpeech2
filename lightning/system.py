@@ -249,13 +249,21 @@ class System(pl.LightningModule):
         for k in state_dict:
             if k in model_state_dict:
                 if state_dict[k].shape != model_state_dict[k].shape:
-                    print(f"Skip loading parameter: {k}, "
-                                f"required shape: {model_state_dict[k].shape}, "
-                                f"loaded shape: {state_dict[k].shape}")
+                    try:
+                        self.print(f"Skip loading parameter: {k}, "
+                                    f"required shape: {model_state_dict[k].shape}, "
+                                    f"loaded shape: {state_dict[k].shape}")
+                    except:
+                        print(f"Skip loading parameter: {k}, "
+                                    f"required shape: {model_state_dict[k].shape}, "
+                                    f"loaded shape: {state_dict[k].shape}")
                     state_dict[k] = model_state_dict[k]
                     is_changed = True
             else:
-                print(f"Dropping parameter {k}")
+                try:
+                    self.print(f"Dropping parameter {k}")
+                except:
+                    print(f"Dropping parameter {k}")
                 is_changed = True
 
         if is_changed:

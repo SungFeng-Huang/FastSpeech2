@@ -176,7 +176,7 @@ def main(args, configs):
         profiler='simple',
     )
     trainer.fit(system)
-    system.result_dir = os.path.join(system.result_dir, f"step_{trainer.global_step}")
+    system.result_dir = os.path.join(system.result_dir, args.algorithm)
     trainer.test(system, verbose=True)
 
 
